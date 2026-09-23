@@ -72,7 +72,11 @@ try:
     sh(f"{py} -m pip install -q git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8", "utils3d")
     sh(f"{py} -m pip install -q spconv-cu120", "spconv")
     sh(f"{py} -m pip install -q kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.4.0_cu121.html", "kaolin", fatal=False)
-    sh("git clone -q --recurse-submodules https://github.com/microsoft/TRELLIS.git /tmp/TRELLIS", "clone-trellis")
+    # the pinned FlexiCubes submodule (MaxtirError/FlexiCubes) was deleted from GitHub; use NVIDIA's official repo
+    sh("git clone -q https://github.com/microsoft/TRELLIS.git /tmp/TRELLIS", "clone-trellis")
+    # TRELLIS needs its modified fork (voxelgrid_colors API), so take the copy vendored in ComfyUI-3D-Pack
+    FX = "https://raw.githubusercontent.com/MrForExample/ComfyUI-3D-Pack/main/Gen_3D_Modules/TRELLIS/trellis/representations/mesh/flexicubes"
+    sh(f"D=/tmp/TRELLIS/trellis/representations/mesh/flexicubes; rm -rf $D && mkdir -p $D && curl -fsSL {FX}/flexicubes.py -o $D/flexicubes.py && curl -fsSL {FX}/tables.py -o $D/tables.py && touch $D/__init__.py && grep -q voxelgrid_colors $D/flexicubes.py", "fetch-flexicubes")
     sh("git clone -q https://github.com/NVlabs/nvdiffrast.git /tmp/nvdiffrast", "clone-nvdiffrast")
     sh(f"{py} -m pip install -q --no-build-isolation /tmp/nvdiffrast", "nvdiffrast")
     sh("git clone -q https://github.com/autonomousvision/mip-splatting.git /tmp/mip-splatting", "clone-mip")

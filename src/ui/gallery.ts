@@ -38,6 +38,7 @@ export class Gallery {
   private camera = new THREE.PerspectiveCamera(35, 1, 0.05, 200);
   private controls: OrbitControls | null = null;
   private loader = new GLTFLoader();
+  private pending = new Map<string, Promise<{ obj: THREE.Object3D; clips: THREE.AnimationClip[] } | null>>();
   private model: THREE.Object3D | null = null;
   private pose: ((p: number) => void) | null = null;
   private kit: Kit | null = null;
@@ -180,10 +181,15 @@ export class Gallery {
     let entry = this.cache.get(id);
     let generated = true;
     if (entry === undefined) {
-      entry = await new Promise<{ obj: THREE.Object3D; clips: THREE.AnimationClip[] } | null>(res =>
-        this.loader.load(`${BASE}models/${id}.glb${q}`, g => res({ obj: g.scene, clips: g.animations }), undefined, () => res(null)));
-      if (entry) this.normalise(entry.obj, def);
-      this.cache.set(id, entry);
+      // one in-flight load per id: two concurrent loads of the same model used to add two copies to the scene
+      let p = this.pending.get(id);
+      if (!p) {
+        p = new Promise<{ obj: THREE.Object3D; clips: THREE.AnimationClip[] } | null>(res =>
+          this.loader.load(`${BASE}models/${id}.glb${q}`, g => res({ obj: g.scene, clips: g.animations }), undefined, () => res(null)))
+          .then(e => { if (e) this.normalise(e.obj, def); this.cache.set(id, e); this.pending.delete(id); return e; });
+        this.pending.set(id, p);
+      }
+      entry = await p;
     }
     if (this.current !== id) return;
     let obj: THREE.Object3D | null | undefined = entry?.obj;
@@ -204,6 +210,7 @@ export class Gallery {
       }
     }
     if (!obj) { status.textContent = 'No model'; return; }
+    if (this.model && this.model !== obj) this.scene.remove(this.model);
     this.model = obj;
     this.hover = def.air ? 0.6 : 0;
     this.scene.add(obj);

@@ -62,6 +62,20 @@ Units, buildings and resources are real 3D models made by open AI models, then p
   - Objectives: destroy, survive, build, reach a tier, and protect your base, with scripted attack waves.
   - Tech is locked per mission, and progress is saved.
 
+## Operation Iron Descent (first-person campaign)
+
+A first-person campaign played only with Vanguard Directorate forces. You are Ember-One, a trooper dropped onto Vorrhaal, the Kyrrh Swarm homeworld.
+
+- **Intro cinematic (about 50 seconds, skippable).** The flagship *Unyielding Covenant* in orbit, a hull flyby, dropships launching, re-entry through the burning sky, and landfall. It is rendered in real time, with narrated subtitles and a procedural engine rumble.
+- **Three missions:**
+  - **Landfall:** on foot. Hold the drop zone, then destroy the Thorn Colonies.
+  - **Into the Mire:** the Tier 2 Juggernaut drops in. Burn both Brood Nests and kill the Matrons.
+  - **Titanfall:** the Tier 3 Titan drops in, and the Dreadnought's Solar Lance becomes available. Kill the Behemoths and break the Brood Throne.
+- **RTS-accurate rules.** Every Kyrrh stat, weapon, range, cooldown, armor value, armored bonus, splash, regeneration and creep speed comes from `src/sim/data.ts`. The same applies to the RTS larva timer and Matron *Spawn Brood*, Directorate *Overdrive* (−10 HP, +50% for 11 s), *Anchor Mode* (2.7 s transition, 39 m range, minimum range, splash) and *Solar Lance* (2 s charge, 240 damage, 71 s cooldown).
+  - The player is a hero: ×4 health, Level 3 Weapons and Plating, Titanium Hulls on the Titan, and a Mender drone that heals at the Mender's 12.6 HP/s once you break contact.
+- **Controls:** WASD to move, Shift to sprint, Space to jump, mouse to aim, LMB to fire. 1/2 switches between rifle and grenades, R reloads (or calls the Solar Lance in Titanfall), Q is Overdrive, E boards or exits a mech, F toggles Anchor Mode, and Esc pauses.
+- **Environment art is AI-generated on Kaggle**, like the units: SDXL ground textures, sky and planet map, plus SDXL→TRELLIS 3D props (fungus trees, bone arches, spires, egg clutches, crystals, the dropship wreck, the flagship and the dropship). See `assetgen/envconcepts/` and `assetgen/build_env.py`.
+
 ## Modes and performance
 
 - **Play vs AI** or **Watch AI vs AI**. The spectator mode shows both economies and has an accelerator (½× to 16×, plus MAX) and a director camera that follows the biggest fight.
@@ -73,9 +87,10 @@ Units, buildings and resources are real 3D models made by open AI models, then p
 ```bash
 npm install
 npm run dev          # local dev server
-npm test             # 51 tests (simulation + campaign) (mechanics + full AI-vs-AI games in every matchup)
+npm test             # 56 tests: simulation (mechanics + full AI-vs-AI games in every matchup), campaign and FPS data
 npm run build && npm run preview
 npm run test:e2e     # drives the built game in headless Chrome (needs the preview server running)
+node tests/e2e/fps.mjs http://localhost:5173/   # FPS campaign: intro + all 3 missions played by an auto-aim bot
 ```
 
 ### Layout
@@ -84,7 +99,9 @@ npm run test:e2e     # drives the built game in headless Chrome (needs the previ
 src/sim/       game.ts (engine), data.ts (races/units/tiers), ai.ts, map.ts, pathfinding.ts
 src/render/    renderer2d.ts, sprites.ts, terrain.ts (Canvas 2D); fx3d.ts, portrait3d.ts (Three.js)
 src/audio/     audio.ts (procedural Web Audio engine)
-src/ui/        commands.ts (command card)
+src/ui/        commands.ts (command card), gallery.ts (3D unit gallery)
+src/campaign/  RTS campaign missions + controller
+src/fps/       FPS campaign: fps.ts (engine), cinematic.ts (intro), mode.ts (menus/HUD), story.ts (script + missions)
 src/main.ts    app shell, input, HUD, minimap
 tests/unit     Vitest simulation tests
 tests/e2e      Puppeteer browser test

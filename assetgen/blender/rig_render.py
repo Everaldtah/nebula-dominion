@@ -71,6 +71,25 @@ for o in scene.objects: o.select_set(o in meshes)
 bpy.context.view_layer.objects.active = meshes[0]
 if len(meshes) > 1: bpy.ops.object.join()
 obj = bpy.context.view_layer.objects.active
+# ---- remove reconstruction floaters: small detached fragments around the model
+bpy.ops.object.mode_set(mode="EDIT"); bpy.ops.mesh.select_all(action="SELECT"); bpy.ops.mesh.separate(type="LOOSE"); bpy.ops.object.mode_set(mode="OBJECT")
+parts = [o for o in scene.objects if o.type == "MESH"]
+def diag(o):
+    b = [o.matrix_world @ Vector(c) for c in o.bound_box]
+    return (Vector((max(v.x for v in b), max(v.y for v in b), max(v.z for v in b))) - Vector((min(v.x for v in b), min(v.y for v in b), min(v.z for v in b)))).length
+big = max(parts, key=lambda o: len(o.data.vertices))
+nbig, dbig = len(big.data.vertices), diag(big)
+removed = 0
+for o in parts:
+    if o is big: continue
+    if len(o.data.vertices) < 0.02 * nbig and diag(o) < 0.15 * dbig:
+        bpy.data.objects.remove(o); removed += 1
+parts = [o for o in scene.objects if o.type == "MESH"]
+for o in scene.objects: o.select_set(o in parts)
+bpy.context.view_layer.objects.active = big
+if len(parts) > 1: bpy.ops.object.join()
+obj = bpy.context.view_layer.objects.active
+print("FLOATERS_REMOVED", removed)
 for o in list(scene.objects):
     if o.type in ("EMPTY", "ARMATURE") and o != obj: bpy.data.objects.remove(o)
 obj.parent = None

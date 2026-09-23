@@ -13,6 +13,7 @@ import { atlas } from './render/atlas';
 import { Gallery } from './ui/gallery';
 import { ACTS, Line, loadProgress, Mission, MISSIONS, saveProgress, unlocked } from './campaign/missions';
 import { CampaignController } from './campaign/controller';
+import { FpsMode } from './fps/mode';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const RACE_LIST: Race[] = ['directorate', 'kyrrh', 'aethel'];
@@ -23,7 +24,8 @@ class App {
   fx = new FX3D($<HTMLCanvasElement>('fx'));
   menuScene = new MenuScene();
   portrait: Portrait3D | null = null;
-  mode: 'menu' | 'game' = 'menu';
+  mode: 'menu' | 'game' | 'fps' = 'menu';
+  fps: FpsMode | null = null;
   game: Game | null = null;
   r2d: Renderer2D | null = null;
   me = 0;
@@ -153,6 +155,11 @@ class App {
     $('tomenu-btn').onclick = () => { $('end').classList.add('hidden'); const wasCampaign = !!this.mission; this.toMenu(); if (wasCampaign) this.openCampaign(); };
     $('next-btn').onclick = () => { $('end').classList.add('hidden'); const i = this.mission ? MISSIONS.indexOf(this.mission) : -1; this.toMenu(); if (i >= 0 && MISSIONS[i + 1]) this.briefing(MISSIONS[i + 1]); };
     $('campaign-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.openCampaign(); };
+    $('fps-btn').onclick = () => {
+      audio.unlock(); audio.ui('open');
+      this.fps ??= new FpsMode(() => { this.mode = 'menu'; $('menu').classList.remove('hidden'); }, () => { this.mode = 'fps'; $('menu').classList.add('hidden'); });
+      this.fps.open();
+    };
     $('gallery-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.gallery ??= new Gallery(); this.gallery.open(); };
     $('campaign-close').onclick = () => { audio.ui('click'); $('campaign').classList.add('hidden'); };
     $('brief-back').onclick = () => { audio.ui('click'); $('briefing').classList.add('hidden'); this.openCampaign(); };
