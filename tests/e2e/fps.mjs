@@ -160,7 +160,7 @@ if (!only || only === 'f2') {
   else { await p.click('#fe-next'); await sleep(400); await p.click('#fb-go'); }
   await waitGame();
   await shot('07-f2-start');
-  const pods = await p.evaluate(async () => { const g = window.__fps; g.timeScale = 4; while (!g.pickups.length && g.elapsed < 40) await new Promise(r => setTimeout(r, 100)); g.timeScale = 1; return g.pickups.map(x => x.mode); });
+  const pods = await p.evaluate(async () => { const g = window.__fps; g.timeScale = 4; while (!g.pickups.length && g.elapsed < 40) { g.hp = Math.max(g.hp, 150); await new Promise(r => setTimeout(r, 100)); } g.timeScale = 1; return g.pickups.map(x => x.mode); });
   check(pods.includes('juggernaut'), `Juggernaut drop pod lands (${pods})`);
   await p.evaluate(() => { const g = window.__fps; const pk = g.pickups[0]; g.yaw = Math.atan2(-(pk.pos.x - g.pos.x), -(pk.pos.z - g.pos.z)); g.pitch = -0.1; });
   await sleep(600); await shot('08-f2-pod');
@@ -180,7 +180,7 @@ if (!only || only === 'f3') {
   if (only) await jumpTo(2, '["f1","f2"]');
   else { await p.click('#fe-next'); await sleep(400); await p.click('#fb-go'); }
   await waitGame();
-  const t = await p.evaluate(async () => { const g = window.__fps; g.timeScale = 4; while (g.pickups.length < 2 && g.elapsed < 20) await new Promise(r => setTimeout(r, 100)); g.timeScale = 1; const pk = g.pickups.find(x => x.mode === 'titan'); g.pos.x = pk.pos.x + 2; g.pos.z = pk.pos.z; g.interact(); return { mode: g.mode, hp: g.hp }; });
+  const t = await p.evaluate(async () => { const g = window.__fps; g.timeScale = 4; while (g.pickups.length < 2 && g.elapsed < 20) { g.hp = Math.max(g.hp, 150); await new Promise(r => setTimeout(r, 100)); } g.timeScale = 1; const pk = g.pickups.find(x => x.mode === 'titan'); g.pos.x = pk.pos.x + 2; g.pos.z = pk.pos.z; g.interact(); return { mode: g.mode, hp: g.hp }; });
   check(t.mode === 'titan' && t.hp === 1800, `boarded Titan with 450x4 = 1800 health (${t.mode} ${t.hp})`);
   const lance = await p.evaluate(async () => { const g = window.__fps; const th = g.enemies.find(e => e.k.id === 'throne'); const before = th.hp; const eye = g.eye(); g.yaw = Math.atan2(-(th.pos.x - eye.x), -(th.pos.z - eye.z)); g.pitch = Math.atan2(th.pos.y + 3 - eye.y, Math.hypot(th.pos.x - eye.x, th.pos.z - eye.z)); g.callLance(); await new Promise(r => setTimeout(r, 2600)); return { dmg: before - th.hp, cd: g.lanceCd }; });
   check(lance.dmg >= 230 && lance.cd > 60, `Solar Lance hits the Throne for 240-armor (${lance.dmg.toFixed(0)}), cooldown ~71s (${lance.cd.toFixed(0)})`);

@@ -67,11 +67,20 @@ const VEHICLE = {
 const SIEGE = { damage: 40 + 4 * UPG, bonus: 30, range: 13 * M, minRange: 2 * M, cd: 2.14, splash: 1.25 * M, transition: 2.7 };
 
 interface Enemy {
+  id: number; net?: THREE.Vector3; netRy?: number; netAnim?: number;
   k: Kind; obj: THREE.Object3D; mixer: THREE.AnimationMixer | null; acts: Record<string, THREE.AnimationAction>;
   hp: number; pos: THREE.Vector3; vel: THREE.Vector3; cd: number; spawnT: number; lastHit: number; alive: boolean; dying: number; cur: string; flash: number; stun: number;
 }
 interface Shot { pos: THREE.Vector3; vel: THREE.Vector3; mesh: THREE.Mesh; dmg: number; bonus: number; splash: number; enemy: boolean; life: number; grav: number; hitsAir: boolean; color: number; kind: string }
-interface Pickup { pos: THREE.Vector3; mesh: THREE.Object3D; mode: Mode; hp: number }
+interface Pickup { id: number; pos: THREE.Vector3; mesh: THREE.Object3D; mode: Mode; hp: number }
+
+/** Co-op wiring supplied by the menu layer: who we are, and how to reach the partner. */
+export interface CoopLink { role: 'host' | 'guest'; allyName: string; send(msg: any, reliable?: boolean): void; direct(): boolean }
+interface Ally {
+  name: string; pos: THREE.Vector3; target: THREE.Vector3; yaw: number; pitch: number; mode: Mode; hp: number; maxHp: number;
+  down: boolean; firing: boolean; weapon: string; obj: THREE.Group; bodies: Partial<Record<Mode, { o: THREE.Object3D; mixer: THREE.AnimationMixer | null; walk?: THREE.AnimationAction; idle?: THREE.AnimationAction }>>;
+  tag: THREE.Sprite; lastFx: number; lastMsg: number;
+}
 
 export interface FpsHooks {
   radio(r: Radio): void;
@@ -82,7 +91,8 @@ export interface FpsHooks {
 }
 export interface HudState {
   hp: number; maxHp: number; mode: Mode; weapon: string; ammo: string; overdrive: number; anchor: string; lance: number; lanceReady: boolean;
-  boss: { name: string; frac: number } | null; hurt: number; hitmark: number; radar: { x: number; z: number; air: boolean; big: boolean; pod?: boolean }[]; yaw: number;
+  boss: { name: string; frac: number } | null; hurt: number; hitmark: number; radar: { x: number; z: number; air: boolean; big: boolean; pod?: boolean; ally?: boolean }[]; yaw: number;
+  ally: { name: string; hp: number; maxHp: number; down: boolean; mode: Mode } | null; down: number; link: string;
   prompt: string;
 }
 
@@ -146,14 +156,21 @@ export class FpsGame {
   private objDone = new Set<number>();
   private podDropped = false;
   paused = false; over = false; result: 'win' | 'lose' | null = null;
+  // co-op
+  coop: CoopLink | null = null; ally: Ally | null = null;
+  private nextId = 1; private podId = 1; private netT = 0; private metaT = 0; private stateT = 0;
+  private hitQ: [number, number, number, number][] = [];
+  private downT = 0; private pendingBoard = -1; private byId = new Map<number, Enemy>(); private seenCreep = new Set<number>();
+  get role() { return this.coop?.role ?? 'solo'; }
   /** test hooks: fire without pointer lock, simulation speed multiplier */
   testAuto = false; timeScale = 1;
   private raf = 0; private last = 0;
   private handlers: [string, EventListener][] = [];
 
   private D: typeof DIFFICULTY[Difficulty];
-  constructor(public canvas: HTMLCanvasElement, mission: FpsMission, private hooks: FpsHooks, private seed = 7, public difficulty: Difficulty = 'medium') {
+  constructor(public canvas: HTMLCanvasElement, mission: FpsMission, private hooks: FpsHooks, private seed = 7, public difficulty: Difficulty = 'medium', coop: CoopLink | null = null) {
     this.mission = mission;
+    this.coop = coop;
     this.D = DIFFICULTY[difficulty];
     this.hp = this.footHp = this.maxHp('foot');
     this.noise = noise2(seed * 97 + mission.id.length * 13);
@@ -177,7 +194,7 @@ export class FpsGame {
     for (const w of m.waves) for (const [id] of w.kinds) enemyIds.add(id);
     for (const [id] of m.structures) { enemyIds.add(id); kind(id).spawns?.forEach(s => enemyIds.add(s)); }
     enemyIds.add('matron'); enemyIds.add('skitterling');
-    const units = [...enemyIds, 'juggernaut', 'titan'];
+    const units = [...enemyIds, 'juggernaut', 'titan', ...(this.coop ? ['trooper'] : [])];
     const props = ['prop_fungus', 'prop_spire', 'prop_eggs', 'prop_rock', 'prop_arch', 'prop_pod', 'prop_crystal', 'prop_wreck', 'prop_beacon', 'prop_rifle'];
     const all = [...units.map(u => ({ key: u, url: `${BASE}models/${u}.glb` })), ...props.map(p => ({ key: p, url: `${BASE}env/${p}.glb` }))];
     let done = 0;
@@ -272,7 +289,7 @@ export class FpsGame {
     this.addProp('prop_wreck', 9, -6, 11, 0.6);
     // Kyrrh structures
     const placed: { x: number; z: number }[] = [];
-    for (const [id, n] of m.structures) for (let i = 0; i < n; i++) {
+    for (const [id, n] of (this.role === 'guest' ? [] : m.structures)) for (let i = 0; i < n; i++) {
       let x = 0, z = 0;
       for (let tries = 0; tries < 50; tries++) {
         const a = rnd() * Math.PI * 2, d = id === 'thorn' ? 45 + rnd() * 50 : 90 + rnd() * 60;
@@ -284,17 +301,161 @@ export class FpsGame {
       if (id !== 'thorn') this.creep.push({ x, z, r: 28 });
     }
     // creep decals
-    for (const c of this.creep) {
-      const ring = new THREE.Mesh(new THREE.CircleGeometry(c.r, 48), new THREE.MeshStandardMaterial({ map: mk(this.tex.tex_creep?.clone()) ?? null, color: 0xc070c0, transparent: true, opacity: 0.85, roughness: 0.6, depthWrite: false }));
-      ring.rotation.x = -Math.PI / 2; ring.position.set(c.x, this.heightAt(c.x, c.z) + 0.15, c.z); ring.receiveShadow = true;
-      s.add(ring);
-    }
+    for (const c of this.creep) this.addCreep(c.x, c.z, c.r);
+    if (this.coop) this.buildAlly();
     // first-person gun
     this.buildGun();
     this.camera.add(this.gunGroup());
     s.add(this.camera);
     this.pos.set(0, this.heightAt(0, 0), 0);
     this.waveNext = m.waves.map(w => w.from); this.waveN = m.waves.map(() => 0);
+  }
+
+  private addCreep(x: number, z: number, r: number) {
+    const t = this.tex.tex_creep?.clone();
+    if (t) { t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping; t.repeat.set(r / 4.5, r / 4.5); t.needsUpdate = true; }
+    const ring = new THREE.Mesh(new THREE.CircleGeometry(r, 48), new THREE.MeshStandardMaterial({ map: t ?? null, color: 0xc070c0, transparent: true, opacity: 0.85, roughness: 0.6, depthWrite: false }));
+    ring.rotation.x = -Math.PI / 2; ring.position.set(x, this.heightAt(x, z) + 0.15, z); ring.receiveShadow = true;
+    this.scene.add(ring);
+  }
+
+  // ================================================================ co-op: the partner's avatar
+  private buildAlly() {
+    const obj = new THREE.Group();
+    const bodies: Ally['bodies'] = {};
+    for (const [mode, id, height] of [['foot', 'trooper', 1.95], ['juggernaut', 'juggernaut', 4.2], ['titan', 'titan', 9]] as [Mode, string, number][]) {
+      const src = this.models.get(id);
+      let o: THREE.Object3D, mixer: THREE.AnimationMixer | null = null, walk, idle;
+      if (src) {
+        o = skClone(src.scene);
+        const hb = new THREE.Box3().setFromObject(o);
+        o.scale.setScalar(height / Math.max(0.1, hb.max.y - hb.min.y));   // sized to the player's eye height, not the RTS scale
+        o.traverse(x => { const mm = x as THREE.Mesh; if (mm.isMesh) { mm.castShadow = true; mm.frustumCulled = false; tuneMat(mm.material as THREE.MeshStandardMaterial); } });
+        if (src.clips.length) {
+          mixer = new THREE.AnimationMixer(o);
+          const w = src.clips.find(c => c.name === 'Walk'), i = src.clips.find(c => c.name === 'Idle');
+          walk = w ? mixer.clipAction(w) : undefined; idle = i ? mixer.clipAction(i) : undefined;
+          idle?.play(); walk?.play(); if (walk) walk.weight = 0;
+        }
+      } else o = new THREE.Mesh(new THREE.CapsuleGeometry(0.5, 1.2, 4, 8), new THREE.MeshStandardMaterial({ color: 0xff9a3a }));
+      o.visible = mode === 'foot';
+      obj.add(o); bodies[mode] = { o, mixer, walk, idle };
+    }
+    const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: nameTex(this.coop!.allyName), depthTest: false, transparent: true }));
+    tag.scale.set(4, 1, 1); tag.renderOrder = 20; obj.add(tag);
+    obj.visible = false;
+    this.scene.add(obj);
+    this.ally = { name: this.coop!.allyName, pos: new THREE.Vector3(3, 0, 3), target: new THREE.Vector3(3, 0, 3), yaw: 0, pitch: 0, mode: 'foot', hp: 1, maxHp: 1,
+      down: false, firing: false, weapon: 'rifle', obj, bodies, tag, lastFx: 0, lastMsg: 0 };
+  }
+  private updateAlly(dt: number) {
+    const a = this.ally; if (!a) return;
+    a.obj.visible = a.lastMsg > 0 && !a.down;
+    const k = 1 - Math.exp(-dt * 12);
+    const moving = a.pos.distanceTo(a.target) > 0.05;
+    a.pos.lerp(a.target, k);
+    a.pos.y = this.heightAt(a.pos.x, a.pos.z);
+    a.obj.position.copy(a.pos);
+    a.obj.rotation.y = a.yaw + Math.PI / 2;
+    for (const [mode, b] of Object.entries(a.bodies)) {
+      if (!b) continue;
+      b.o.visible = mode === a.mode;
+      if (b.walk && b.idle) { b.walk.weight += ((moving ? 1 : 0) - b.walk.weight) * Math.min(1, dt * 6); b.idle.weight = 1 - b.walk.weight; }
+      if (b.o.visible) b.mixer?.update(dt);
+    }
+    a.tag.position.y = VEHICLE[a.mode].eye + 1.4;
+    // the partner's gunfire: tracers + sound, so you can see them fighting
+    if (a.firing && !a.down && this.elapsed - a.lastFx > (a.mode === 'foot' ? 0.1 : 0.5)) {
+      a.lastFx = this.elapsed;
+      const eye = a.pos.clone(); eye.y += VEHICLE[a.mode].eye;
+      const dir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(a.pitch, a.yaw, 0, 'YXZ'));
+      const from = eye.clone().add(dir.clone().multiplyScalar(1.2)).add(new THREE.Vector3(0, -0.3, 0));
+      this.tracer(from, eye.clone().add(dir.multiplyScalar(60)), a.mode === 'foot' ? 0xffe07a : 0xffc060);
+      audio.weapon(a.mode === 'foot' ? 'bullet' : 'artillery', 'directorate', 'trooper', a.pos.x / M, a.pos.z / M);
+    }
+  }
+  /** Players the Kyrrh can target: me and (in co-op) my partner. */
+  private targets(): { pos: THREE.Vector3; mode: Mode; ally: boolean }[] {
+    const t: { pos: THREE.Vector3; mode: Mode; ally: boolean }[] = [];
+    if (this.hp > 0 && this.downT <= 0) t.push({ pos: this.pos, mode: this.mode, ally: false });
+    const a = this.ally;
+    if (a && a.lastMsg > 0 && !a.down && this.elapsed - a.lastMsg < 5) t.push({ pos: a.pos, mode: a.mode, ally: true });
+    return t;
+  }
+  private hurtAlly(dmg: number, bonus: number, hits: number, src: string) { this.coop?.send({ t: 'hurt', dmg, bonus, hits, src }); }
+
+  // ================================================================ co-op: network messages
+  onNet(m: any) {
+    if (m.t === 'p') {                                 // partner state
+      const a = this.ally; if (!a) return;
+      a.target.set(m.x, m.y, m.z); if (!a.lastMsg) a.pos.copy(a.target);
+      a.yaw = m.yaw; a.pitch = m.pitch; a.mode = m.mode; a.hp = m.hp; a.maxHp = m.maxHp; a.down = !!m.down; a.firing = !!m.f; a.weapon = m.w;
+      a.lastMsg = this.elapsed || 0.001;
+      return;
+    }
+    if (this.role === 'host') {
+      if (m.t === 'hits') for (const [id, dmg, bonus, hits] of m.h as [number, number, number, number][]) { const e = this.byId.get(id); if (e) this.hurtEnemy(e, dmg, bonus, hits, true); }
+      else if (m.t === 'splash') this.splashAt(new THREE.Vector3(m.x, m.y, m.z), m.r, m.dmg, m.bonus, false, !!m.heavy, true);
+      else if (m.t === 'lance') this.lanceStrike(new THREE.Vector3(m.x, m.y, m.z), true);
+      else if (m.t === 'board') {
+        const pk = this.pickups.find(x => x.id === m.id);
+        if (pk) { this.removePod(pk); this.coop!.send({ t: 'podGone', id: pk.id, to: 'guest', hp: pk.hp, mode: pk.mode }); }
+      } else if (m.t === 'drop') this.dropPod(m.mode, new THREE.Vector3(m.x, 0, m.z), m.hp);
+      else if (m.t === 'ready') { for (const pk of this.pickups) this.coop!.send({ t: 'pod', id: pk.id, mode: pk.mode, x: pk.pos.x, z: pk.pos.z, hp: pk.hp }); }
+      return;
+    }
+    // ---- guest: the host is authoritative for the Kyrrh, the pods and the mission
+    if (m.t === 's') {
+      if (Math.abs(m.el - this.elapsed) > 0.5) this.elapsed = m.el;
+      for (const r of m.e as any[]) {
+        const [id, kid, x, y, z, ry, hp, anim] = r;
+        let e = this.byId.get(id);
+        if (!e) {
+          e = this.spawn(kid, new THREE.Vector3(x, y, z), id);
+          e.pos.set(x, y, z);
+          if ((kid === 'nest' || kid === 'throne') && !this.seenCreep.has(id)) { this.seenCreep.add(id); this.creep.push({ x, z, r: 28 }); this.addCreep(x, z, 28); }
+        }
+        if (!e.alive) continue;
+        e.net = (e.net ?? new THREE.Vector3()).set(x, y, z); e.netRy = ry; e.netAnim = anim;
+        if (hp < e.hp) e.flash = 0.12;
+        e.hp = hp;
+      }
+    } else if (m.t === 'die') { const e = this.byId.get(m.id); if (e && e.alive) this.killEnemy(e); }
+    else if (m.t === 'm') {
+      this.kills = new Map(m.kills); this.objDone = new Set(m.od);
+    } else if (m.t === 'hurt') this.hurtPlayer(m.dmg, m.bonus, m.hits, m.src);
+    else if (m.t === 'es') this.shoot(new THREE.Vector3(...(m.f as [number, number, number])), new THREE.Vector3(...(m.v as [number, number, number])).normalize(), Math.hypot(...(m.v as [number, number, number])), { dmg: 0, enemy: true, color: m.c, splash: m.s, grav: m.g, life: m.l, kind: 'ghost' });
+    else if (m.t === 'pod') { if (!this.pickups.some(x => x.id === m.id)) this.dropPod(m.mode, new THREE.Vector3(m.x, 0, m.z), m.hp, m.id); }
+    else if (m.t === 'podGone') {
+      const pk = this.pickups.find(x => x.id === m.id); if (pk) this.removePod(pk);
+      if (m.to === 'guest' && this.pendingBoard === m.id) { this.pendingBoard = -1; this.enterMech(m.mode, m.hp); }
+    } else if (m.t === 'msg') this.message(m.text, m.kind);
+    else if (m.t === 'end') { if (!this.over) { this.over = true; this.result = m.win ? 'win' : 'lose'; this.hooks.end(!!m.win, m.text); } }
+  }
+
+  /** Host: stream the world to the guest. Everyone: stream my own avatar. */
+  private netTick(dt: number) {
+    const c = this.coop; if (!c) return;
+    const relay = !c.direct();
+    this.stateT -= dt;
+    if (this.stateT <= 0) {
+      this.stateT = relay ? 0.1 : 0.05;
+      c.send({ t: 'p', x: +this.pos.x.toFixed(2), y: +this.pos.y.toFixed(2), z: +this.pos.z.toFixed(2), yaw: +this.yaw.toFixed(3), pitch: +this.pitch.toFixed(3),
+        mode: this.mode, hp: Math.max(0, Math.round(this.hp)), maxHp: this.maxHp(this.mode), down: this.downT > 0, f: this.mouseDown && !this.over, w: this.weapon }, false);
+    }
+    if (c.role !== 'host') {
+      this.netT -= dt;
+      if (this.netT <= 0 && this.hitQ.length) { this.netT = relay ? 0.15 : 0.08; c.send({ t: 'hits', h: this.hitQ.splice(0) }); }
+      return;
+    }
+    this.netT -= dt;
+    if (this.netT <= 0) {
+      this.netT = relay ? 0.12 : 0.066;
+      const e = this.enemies.filter(x => x.alive).map(x => [x.id, x.k.id, +x.pos.x.toFixed(2), +x.pos.y.toFixed(2), +x.pos.z.toFixed(2), +x.obj.rotation.y.toFixed(2), Math.ceil(x.hp), x.cur === 'Attack' ? 2 : x.vel.length() > 0.6 ? 1 : 0]);
+      c.send({ t: 's', el: +this.elapsed.toFixed(2), e }, false);
+    }
+    this.metaT -= dt;
+    if (this.metaT <= 0) { this.metaT = 0.5; c.send({ t: 'm', kills: [...this.kills], od: [...this.objDone] }); }
   }
 
   private addProp(id: string, x: number, z: number, scale: number, rot: number) {
@@ -345,7 +506,7 @@ export class FpsGame {
   private gunGroup() { const g = new THREE.Group(); g.add(this.gun!, this.cockpit!); return g; }
 
   // ================================================================ enemies
-  spawn(id: string, at: THREE.Vector3): Enemy {
+  spawn(id: string, at: THREE.Vector3, netId?: number): Enemy {
     const k = kind(id);
     const src = this.models.get(id);
     let obj: THREE.Object3D, mixer: THREE.AnimationMixer | null = null;
@@ -362,11 +523,11 @@ export class FpsGame {
       obj = new THREE.Mesh(new THREE.SphereGeometry(k.radius, 16, 12), new THREE.MeshStandardMaterial({ color: 0x8a3a80 }));
     }
     const g = new THREE.Group(); g.add(obj); this.scene.add(g);
-    const e: Enemy = { k, obj: g, mixer, acts, hp: k.hp, pos: at.clone(), vel: new THREE.Vector3(), cd: Math.random() * k.cd, spawnT: (k.spawnEvery ?? 0) * Math.random(), lastHit: -99, alive: true, dying: 0, cur: '', flash: 0, stun: 0 };
+    const e: Enemy = { id: netId ?? this.nextId++, k, obj: g, mixer, acts, hp: k.hp, pos: at.clone(), vel: new THREE.Vector3(), cd: Math.random() * k.cd, spawnT: (k.spawnEvery ?? 0) * Math.random(), lastHit: -99, alive: true, dying: 0, cur: '', flash: 0, stun: 0 };
     e.pos.y = this.heightAt(at.x, at.z) + k.air;
     g.position.copy(e.pos);
     this.play(e, 'Idle');
-    this.enemies.push(e);
+    this.enemies.push(e); this.byId.set(e.id, e);
     return e;
   }
   private play(e: Enemy, name: string) {
@@ -382,16 +543,23 @@ export class FpsGame {
   }
 
   /** Damage with RTS rules: bonus vs armored, minus armor, minimum 0.5. */
-  private hurtEnemy(e: Enemy, dmg: number, bonus: number, hits = 1) {
+  private hurtEnemy(e: Enemy, dmg: number, bonus: number, hits = 1, fromAlly = false) {
     if (!e.alive) return;
+    if (this.role === 'guest') {
+      // the host owns the Kyrrh: report the hit, show the feedback locally
+      this.hitQ.push([e.id, +dmg.toFixed(1), +bonus.toFixed(1), hits]);   // batched, flushed ~10x/s
+      e.flash = 0.12; this.hitmark = 0.15;
+      return;
+    }
     let total = 0;
     for (let i = 0; i < hits; i++) total += Math.max(0.5, dmg + (e.k.armored ? bonus : 0) - e.k.armor);
     e.hp -= total; e.lastHit = this.elapsed; e.flash = 0.12;
-    this.hitmark = 0.15;
+    if (!fromAlly) this.hitmark = 0.15;
     if (e.hp <= 0) this.killEnemy(e);
   }
   private killEnemy(e: Enemy) {
     e.alive = false; e.dying = 1.2;
+    if (this.role === 'host') this.coop!.send({ t: 'die', id: e.id });
     this.kills.set(e.k.id, (this.kills.get(e.k.id) ?? 0) + 1);
     this.burst(e.pos.clone().add(new THREE.Vector3(0, 1 + e.k.air * 0.2, 0)), e.k.structure ? 0x9dff5a : 0xd060c0, e.k.structure ? 60 : 24, e.k.structure ? 14 : 5);
     audio.death('kyrrh', e.k.radius / M, !!e.k.structure, this.pos.x / M + (e.pos.x - this.pos.x) / M, this.pos.z / M + (e.pos.z - this.pos.z) / M);
@@ -399,6 +567,7 @@ export class FpsGame {
   }
   dmgLog: Record<string, number> = {};
   private hurtPlayer(dmg: number, bonus: number, hits = 1, src = '?') {
+    if (this.downT > 0 || this.over) return;
     const v = VEHICLE[this.mode];
     let total = 0;
     for (let i = 0; i < hits; i++) total += Math.max(0.5, dmg + (v.armored ? bonus : 0) - v.armor);
@@ -411,6 +580,8 @@ export class FpsGame {
         this.message(`${this.mode === 'titan' ? 'Titan' : 'Juggernaut'} destroyed! Ejecting!`, 'warn');
         this.burst(this.pos.clone().add(new THREE.Vector3(0, 3, 0)), 0xffb347, 60, 12);
         this.mode = 'foot'; this.hp = Math.max(40, this.footHp); this.anchored = false;
+      } else if (this.coop) {
+        if (this.downT <= 0) { this.downT = 10; this.hp = 0; this.mouseDown = false; this.message(`You are down! ${this.coop.allyName} has to hold on. Redeploying in 10 s`, 'warn'); }
       } else if (!this.over) { this.over = true; this.result = 'lose'; this.hooks.end(false, 'Ember-One is down. The swarm overruns the drop zone.'); }
     }
   }
@@ -434,6 +605,10 @@ export class FpsGame {
   }
   private shoot(from: THREE.Vector3, dir: THREE.Vector3, speed: number, o: Partial<Shot> & { dmg: number; enemy: boolean }) {
     const color = o.color ?? (o.enemy ? 0x9dff5a : 0xffd27a);
+    if (o.enemy && this.role === 'host') {
+      const v = dir.clone().multiplyScalar(speed);
+      this.coop!.send({ t: 'es', f: [from.x, from.y, from.z].map(n => +n.toFixed(2)), v: [v.x, v.y, v.z].map(n => +n.toFixed(2)), c: color, s: o.splash ?? 0, g: o.grav ?? 0, l: o.life ?? 3 }, false);
+    }
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(o.splash ? 0.2 : 0.12, 8, 6), new THREE.MeshBasicMaterial({ color }));
     mesh.position.copy(from);
     this.scene.add(mesh);
@@ -445,9 +620,15 @@ export class FpsGame {
     this.scene.add(l);
     this.fx.push({ mesh: l, t: 0, life: 0.06, grow: 0, fade: true });
   }
-  private splashAt(p: THREE.Vector3, radius: number, dmg: number, bonus: number, byEnemy: boolean, heavy = false) {
+  private splashAt(p: THREE.Vector3, radius: number, dmg: number, bonus: number, byEnemy: boolean, heavy = false, fromAlly = false) {
+    if (!byEnemy && !fromAlly && this.role === 'guest') this.coop!.send({ t: 'splash', x: p.x, y: p.y, z: p.z, r: radius, dmg, bonus, heavy });
     this.burst(p, byEnemy ? 0x9dff5a : 0xffa040, heavy ? 70 : 30, radius * (heavy ? 2 : 1.4));
-    if (byEnemy) { if (p.distanceTo(this.eye()) < radius + VEHICLE[this.mode].radius + 1) this.hurtPlayer(dmg, bonus, 1, 'splash'); return; }
+    if (byEnemy) {
+      if (this.role === 'guest') return;   // the host tells us if a blast reached us
+      if (p.distanceTo(this.eye()) < radius + VEHICLE[this.mode].radius + 1) this.hurtPlayer(dmg, bonus, 1, 'splash');
+      const a = this.ally; if (a && !a.down && p.distanceTo(a.pos) < radius + VEHICLE[a.mode].radius + 2) this.hurtAlly(dmg, bonus, 1, 'splash');
+      return;
+    }
     if (heavy) {
       // fireball + shockwave ring + screen shake, and a proper boom
       const ball = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffc070, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -457,15 +638,17 @@ export class FpsGame {
       ring.rotation.x = -Math.PI / 2; ring.position.set(p.x, this.heightAt(p.x, p.z) + 0.3, p.z); this.scene.add(ring);
       this.fx.push({ mesh: ring, t: 0, life: 0.45, grow: radius * 1.6, fade: true });
       this.shake = Math.max(this.shake, 0.35 * Math.max(0, 1 - p.distanceTo(this.pos) / 35));
+      if (this.role === 'guest') { /* damage is applied by the host */ }
       audio.weapon('artillery', 'directorate', 'grenade', p.x / M, p.z / M);
     }
+    if (this.role === 'guest') return;
     for (const e of this.enemies) {
       if (!e.alive) continue;
       const d = Math.max(0, e.pos.distanceTo(p) - e.k.radius);
       if (d >= radius) continue;
       // full damage in the inner 60%, falling to half at the edge
       const f = d < radius * 0.6 ? 1 : 1 - 0.5 * (d - radius * 0.6) / (radius * 0.4);
-      this.hurtEnemy(e, dmg * f, bonus * f);
+      this.hurtEnemy(e, dmg * f, bonus * f, 1, fromAlly);
       if (heavy && !e.k.structure && !e.k.massive) {
         const push = new THREE.Vector3(e.pos.x - p.x, 0, e.pos.z - p.z);
         if (push.lengthSq() < 0.01) push.set(Math.random() - 0.5, 0, Math.random() - 0.5);
@@ -525,20 +708,27 @@ export class FpsGame {
     if (this.mode !== 'foot') {
       // leave the mech where it stands
       const mode = this.mode;
-      this.dropPod(mode, this.pos.clone().add(new THREE.Vector3(Math.sin(this.yaw) * 3, 0, Math.cos(this.yaw) * 3)), this.hp);
+      const at = this.pos.clone().add(new THREE.Vector3(Math.sin(this.yaw) * 3, 0, Math.cos(this.yaw) * 3));
+      if (this.role === 'guest') this.coop!.send({ t: 'drop', mode, x: at.x, z: at.z, hp: this.hp });
+      else this.dropPod(mode, at, this.hp);
       this.mode = 'foot'; this.hp = this.footHp; this.anchored = false; this.anchorT = 0;
       return;
     }
     const p = this.pickups.find(pk => pk.pos.distanceTo(this.pos) < 6);
     if (!p) return;
+    if (this.role === 'guest') { this.pendingBoard = p.id; this.coop!.send({ t: 'board', id: p.id }); return; }   // host arbitrates
+    this.removePod(p);
+    if (this.role === 'host') this.coop!.send({ t: 'podGone', id: p.id });
+    this.enterMech(p.mode, p.hp);
+  }
+  private enterMech(mode: Mode, hp: number) {
     this.footHp = this.hp;
-    this.mode = p.mode; this.hp = p.hp;
-    this.scene.remove(p.mesh);
-    this.pickups = this.pickups.filter(x => x !== p);
-    this.message(p.mode === 'titan' ? 'TITAN ONLINE' : 'JUGGERNAUT ONLINE');
+    this.mode = mode; this.hp = hp;
+    this.message(mode === 'titan' ? 'TITAN ONLINE' : 'JUGGERNAUT ONLINE');
     audio.ui('confirm');
   }
-  private dropPod(mode: Mode, at: THREE.Vector3, hp?: number) {
+  private removePod(p: Pickup) { this.scene.remove(p.mesh); this.pickups = this.pickups.filter(x => x !== p); }
+  private dropPod(mode: Mode, at: THREE.Vector3, hp?: number, netId?: number) {
     const src = this.models.get(mode);
     const g = new THREE.Group();
     if (src) {
@@ -550,7 +740,9 @@ export class FpsGame {
     at.y = this.heightAt(at.x, at.z);
     g.position.copy(at);
     this.scene.add(g);
-    this.pickups.push({ pos: at.clone(), mesh: g, mode, hp: hp ?? this.maxHp(mode) });
+    const pk: Pickup = { id: netId ?? this.podId++, pos: at.clone(), mesh: g, mode, hp: hp ?? this.maxHp(mode) };
+    this.pickups.push(pk);
+    if (this.role === 'host') this.coop!.send({ t: 'pod', id: pk.id, mode, x: at.x, z: at.z, hp: pk.hp });
   }
   callLance() {
     // Dreadnought Solar Lance: 2s channel, then 240 damage. Cooldown 71s (RTS values).
@@ -563,6 +755,17 @@ export class FpsGame {
     const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 400, 16, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff1a0, transparent: true, opacity: 0.15, blending: THREE.AdditiveBlending, depthWrite: false }));
     beam.position.copy(hit.point).add(new THREE.Vector3(0, 200, 0));
     this.scene.add(beam); this.lanceBeam = beam;
+  }
+
+  /** Solar Lance impact: 240 damage to the nearest enemy at the point (host applies it, the guest reports it). */
+  private lanceStrike(t: THREE.Vector3, fromAlly: boolean) {
+    if (this.role === 'guest') this.coop!.send({ t: 'lance', x: t.x, y: t.y, z: t.z });
+    else {
+      const e = this.enemies.filter(x => x.alive).sort((a, b) => a.pos.distanceTo(t) - b.pos.distanceTo(t))[0];
+      if (e && e.pos.distanceTo(t) < e.k.radius + 6) this.hurtEnemy(e, 240, 0, 1, fromAlly);
+    }
+    this.burst(t, 0xfff1a0, 90, 16);
+    audio.ability('solarlance', t.x / M, t.z / M);
   }
 
   // ================================================================ aiming
@@ -676,6 +879,13 @@ export class FpsGame {
   private missionTick(dt: number) {
     const m = this.mission;
     m.radio.forEach((r, i) => { if (!this.radioFired.has(i) && this.elapsed >= r.at) { this.radioFired.add(i); this.hooks.radio(r); } });
+    if (this.role !== 'guest') this.missionLogic();
+    this.renderObjectives();
+    void dt;
+  }
+  private missionLogic() {
+    const m = this.mission;
+    const players = this.targets();
     m.waves.forEach((w, i) => {
       if (this.elapsed < this.waveNext[i] || (w.until && this.elapsed > w.until)) return;
       this.waveNext[i] += w.every;
@@ -684,25 +894,43 @@ export class FpsGame {
       if (alive >= cap) return;
       const scale = Math.min(2.5, 1 + (w.grow ?? 0) * this.waveN[i]++);   // waves grow, but never past 2.5x
       const a = Math.random() * Math.PI * 2, d = 70 + Math.random() * 40;
+      const around = (players[Math.floor(Math.random() * players.length)] ?? { pos: this.pos }).pos;   // waves hunt either player
       let room = cap - alive;
-      for (const [id, n] of w.kinds) for (let j = 0; j < Math.max(1, Math.round(n * scale * this.D.waves)) && room-- > 0; j++) {
-        const x = THREE.MathUtils.clamp(this.pos.x + Math.cos(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
-        const z = THREE.MathUtils.clamp(this.pos.z + Math.sin(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
+      // co-op: a second player brings a bigger swarm
+      for (const [id, n] of w.kinds) for (let j = 0; j < Math.max(1, Math.round(n * scale * this.D.waves * (this.coop ? 1.5 : 1))) && room-- > 0; j++) {
+        const x = THREE.MathUtils.clamp(around.x + Math.cos(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
+        const z = THREE.MathUtils.clamp(around.z + Math.sin(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
         this.spawn(id, new THREE.Vector3(x, 0, z));
       }
     });
     if (!this.podDropped && m.unlock.length && this.elapsed >= (m.unlockAt ?? 5)) {
       this.podDropped = true;
-      m.unlock.forEach((u, i) => {
-        const a = this.yaw + Math.PI + (i - (m.unlock.length - 1) / 2) * 0.8;
-        const p = this.pos.clone().add(new THREE.Vector3(Math.sin(a) * 14, 0, Math.cos(a) * 14));
+      // one set of mechs per player: mine next to me, my partner's next to them
+      const owners = [this.pos, ...(this.ally && this.ally.lastMsg > 0 ? [this.ally.pos] : [])];
+      for (const [oi, owner] of owners.entries()) m.unlock.forEach((u, i) => {
+        const a = (oi === 0 ? this.yaw : this.ally!.yaw) + Math.PI + (i - (m.unlock.length - 1) / 2) * 0.8;
+        const p = owner.clone().add(new THREE.Vector3(Math.sin(a) * 14, 0, Math.cos(a) * 14));
         this.dropPod(u, p);
         this.burst(p.clone().add(new THREE.Vector3(0, 2, 0)), 0xffb347, 50, 10);
       });
-      this.message(`${m.unlock.map(u => u === 'titan' ? 'TITAN' : 'JUGGERNAUT').join(' + ')} DROP POD LANDED — press E to board`);
+      const text = `${m.unlock.map(u => u === 'titan' ? 'TITAN' : 'JUGGERNAUT').join(' + ')} DROP POD LANDED — press E to board`;
+      this.message(text);
+      this.coop?.send({ t: 'msg', text });
       audio.death('directorate', 1.4, false, 0, 0);
     }
     m.objectives.forEach((_, i) => { if (!this.objDone.has(i) && this.objectiveDone(i)) { this.objDone.add(i); audio.event('research', 'directorate'); } });
+    if (this.objDone.size === m.objectives.length && !this.over) this.finish(true, m.outro);
+    // co-op: the mission is lost only when both players are down at once
+    if (this.coop && !this.over && this.downT > 0 && this.ally && (this.ally.down || this.elapsed - this.ally.lastMsg > 15))
+      this.finish(false, 'Both of you are down. The swarm overruns the landing zone.');
+  }
+  private finish(win: boolean, text: string) {
+    this.over = true; this.result = win ? 'win' : 'lose';
+    this.coop?.send({ t: 'end', win, text });
+    this.hooks.end(win, text);
+  }
+  private renderObjectives() {
+    const m = this.mission;
     const rows = m.objectives.map((o, i) => {
       const ok = this.objDone.has(i);
       let extra = '';
@@ -711,8 +939,7 @@ export class FpsGame {
       if (o.type === 'destroy' && !ok) extra = ` <b>${this.enemies.filter(e => e.alive && e.k.id === o.kind).length} left</b>`;
       return `<li class="${ok ? 'ok' : ''}">${ok ? '✔' : '◆'} ${o.label}${extra}</li>`;
     });
-    this.hooks.objectives(`<div class="obj-title">${m.title}</div><ul>${rows.join('')}</ul>`);
-    if (this.objDone.size === m.objectives.length && !this.over) { this.over = true; this.result = 'win'; this.hooks.end(true, m.outro); }
+    this.hooks.objectives(`<div class="obj-title">${m.title}${this.coop ? ` · CO-OP` : ''}</div><ul>${rows.join('')}</ul>`);
   }
 
   // ================================================================ loop
@@ -744,6 +971,15 @@ export class FpsGame {
 
   private update(dt: number) {
     if (!this.over) this.elapsed += dt;
+    if (this.downT > 0) {
+      this.downT -= dt;
+      if (this.downT <= 0 && !this.over) {
+        // redeploy at the landing zone
+        this.mode = 'foot'; this.hp = this.footHp = this.maxHp('foot'); this.ammo = RIFLE.mag; this.reload = 0; this.anchored = false; this.anchorT = 0;
+        this.pos.set((Math.random() - 0.5) * 8, 0, (Math.random() - 0.5) * 8); this.vel.set(0, 0, 0);
+        this.message('Redeployed');
+      }
+    }
     const v = VEHICLE[this.mode];
     // ---- timers
     if (this.overdrive > 0) this.overdrive -= dt;
@@ -754,12 +990,7 @@ export class FpsGame {
       this.lanceCharge -= dt;
       if (this.lanceBeam) (this.lanceBeam.material as THREE.MeshBasicMaterial).opacity = 0.15 + (2 - this.lanceCharge) * 0.25;
       if (this.lanceCharge <= 0 && this.lanceTarget) {
-        const t = this.lanceTarget;
-        // Solar Lance deals 240 to the nearest enemy at the target point
-        const e = this.enemies.filter(x => x.alive).sort((a, b) => a.pos.distanceTo(t) - b.pos.distanceTo(t))[0];
-        if (e && e.pos.distanceTo(t) < e.k.radius + 6) this.hurtEnemy(e, 240, 0);
-        this.burst(t, 0xfff1a0, 90, 16);
-        audio.ability('solarlance', 0, 0);
+        this.lanceStrike(this.lanceTarget, false);
         this.lanceCd = 71;
         if (this.lanceBeam) { const b = this.lanceBeam; this.fx.push({ mesh: b, t: 0, life: 0.6, grow: 0, fade: true }); this.lanceBeam = null; }
       }
@@ -774,7 +1005,7 @@ export class FpsGame {
     this.shake = Math.max(0, this.shake - dt * 1.2);
     if (this.muzzle) { this.muzzle.intensity = Math.max(0, this.muzzle.intensity - dt * 120); this.muzzleFlash!.visible = this.muzzle.intensity > 2.5; }
     // ---- movement
-    const speed = (this.anchored || this.anchorT > 0) ? 0 : v.speed * (this.keys.has('ShiftLeft') && this.mode === 'foot' ? 1.45 : 1) * (this.overdrive > 0 ? 1.5 : 1);
+    const speed = (this.anchored || this.anchorT > 0 || this.downT > 0) ? 0 : v.speed * (this.keys.has('ShiftLeft') && this.mode === 'foot' ? 1.45 : 1) * (this.overdrive > 0 ? 1.5 : 1);
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)), right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     const wish = new THREE.Vector3();
     if (this.keys.has('KeyW')) wish.add(fwd); if (this.keys.has('KeyS')) wish.sub(fwd);
@@ -801,7 +1032,7 @@ export class FpsGame {
     if (this.cockpit) this.cockpit.visible = this.mode !== 'foot';
     this.sun.position.set(this.pos.x + 80, 140, this.pos.z + 40); this.sun.target.position.copy(this.pos);
     // ---- weapons
-    if (!this.over) this.fire(dt);
+    if (!this.over && this.downT <= 0) this.fire(dt);
     // ---- enemies
     this.updateEnemies(dt);
     // ---- projectiles
@@ -826,7 +1057,9 @@ export class FpsGame {
     // ---- audio listener follows the player (RTS audio engine uses tile coordinates)
     audio.listener = { x: this.pos.x / M - 20, y: this.pos.z / M - 12, w: 40, h: 25 };
     audio.intensity = Math.min(1, this.enemies.filter(e => e.alive && e.pos.distanceTo(this.pos) < 40).length / 10);
+    this.updateAlly(dt);
     if (!this.over) this.missionTick(dt);
+    this.netTick(dt);
     this.emitHud();
   }
 
@@ -838,10 +1071,15 @@ export class FpsGame {
   private onCreep(p: THREE.Vector3) { return this.mission.biome === 'creep' || this.creep.some(c => Math.hypot(p.x - c.x, p.z - c.z) < c.r); }
 
   private updateEnemies(dt: number) {
-    const me = this.pos, v = VEHICLE[this.mode];
-    const target = new THREE.Vector3(me.x, me.y + v.eye * 0.6, me.z);
+    if (this.role === 'guest') { this.updateNetEnemies(dt); return; }
+    const players = this.targets();
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
+      // each Kyrrh goes for the nearest living player
+      let tp = players[0];
+      for (const pl of players) if (pl.pos.distanceTo(e.pos) < (tp?.pos.distanceTo(e.pos) ?? Infinity)) tp = pl;
+      const me = tp?.pos ?? this.pos, v = VEHICLE[tp?.mode ?? this.mode], onAlly = !!tp?.ally;
+      const target = new THREE.Vector3(me.x, me.y + v.eye * 0.6, me.z);
       e.mixer?.update(dt * (e.cur === 'Walk' ? Math.max(0.6, e.vel.length() / Math.max(1, e.k.speed)) * 1.3 : 1));
       if (!e.alive) {
         e.dying -= dt;
@@ -852,13 +1090,14 @@ export class FpsGame {
       }
       const k = e.k;
       // Kyrrh regeneration (Carapids heal far faster out of combat, as in the RTS)
+      if (!e.alive) continue;
       if (k.regen && e.hp < k.hp) e.hp = Math.min(k.hp, e.hp + k.regen * (k.id === 'carapid' && this.elapsed - e.lastHit > 3 ? 3 : 1) * dt);
       if (e.flash > 0) e.flash -= dt;
       // spawners (Matron Spawn Brood, Nests, Throne)
       if (k.spawnEvery) {
         e.spawnT -= dt;
         const crowd = this.enemies.filter(x => x.alive && !x.k.structure).length;
-        if (e.spawnT <= 0 && e.pos.distanceTo(me) < 90 && crowd < 16) {
+        if (e.spawnT <= 0 && players.some(pl => pl.pos.distanceTo(e.pos) < 90) && crowd < (this.coop ? 22 : 16)) {
           e.spawnT = k.spawnEvery * this.D.hatch;
           const hatch = (hive: Enemy, kinds: string[]) => kinds.forEach((s, j) => this.spawn(s, hive.pos.clone().add(new THREE.Vector3(Math.cos(j * 2.1 + this.elapsed) * (hive.k.radius + 3), 0, Math.sin(j * 2.1 + this.elapsed) * (hive.k.radius + 3)))));
           if (k.id === 'matron') {
@@ -870,7 +1109,7 @@ export class FpsGame {
       const to = target.clone().sub(e.pos); const dist = Math.hypot(to.x, to.z) - v.radius;
       e.cd -= dt;
       const canHit = k.atk !== 'none' && (this.mode === 'foot' || true);
-      const inRange = dist <= k.range && canHit;
+      const inRange = dist <= k.range && canHit && !!tp;
       if (!k.structure) {
         // steer: melee closes in, ranged units hold at 80% range
         const want = k.atk === 'melee' ? 0.5 : k.range * 0.8;
@@ -905,11 +1144,11 @@ export class FpsGame {
         this.play(e, 'Attack');
         const from = e.pos.clone().add(new THREE.Vector3(0, k.air ? 0 : Math.min(3, k.radius), 0));
         if (k.atk === 'melee') {
-          this.hurtPlayer(k.dmg, k.bonusArmored, k.hits, k.id);
+          if (onAlly) this.hurtAlly(k.dmg, k.bonusArmored, k.hits, k.id); else this.hurtPlayer(k.dmg, k.bonusArmored, k.hits, k.id);
           audio.weapon('claw', 'kyrrh', k.id, e.pos.x / M, e.pos.z / M);
           if (k.splash) this.burst(target.clone(), 0xd060c0, 12, 3);
         } else if (k.atk === 'lob') {
-          this.lob(from, target.clone().add(this.vel.clone().multiplyScalar(0.6)), 1.4, { dmg: k.dmg, bonus: k.bonusArmored, splash: Math.max(3, k.splash), enemy: true, color: 0x9dff5a, kind: 'bile' });
+          this.lob(from, target.clone().add(onAlly ? new THREE.Vector3() : this.vel.clone().multiplyScalar(0.6)), 1.4, { dmg: k.dmg, bonus: k.bonusArmored, splash: Math.max(3, k.splash), enemy: true, color: 0x9dff5a, kind: 'bile' });
           audio.weapon('acid', 'kyrrh', k.id, e.pos.x / M, e.pos.z / M);
         } else {
           const dir = target.clone().sub(from).normalize();
@@ -918,6 +1157,32 @@ export class FpsGame {
           audio.weapon(k.id === 'carapid' ? 'acid' : k.atk === 'glaive' ? 'glaive' : k.id === 'thorn' ? 'thorn' : 'spine', 'kyrrh', k.id, e.pos.x / M, e.pos.z / M);
         }
       }
+    }
+  }
+
+  /** Guest: Kyrrh positions come from the host; interpolate and animate them. */
+  private updateNetEnemies(dt: number) {
+    const k = 1 - Math.exp(-dt * 10);
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      e.mixer?.update(dt);
+      if (!e.alive) {
+        e.dying -= dt;
+        e.obj.position.y -= dt * (e.k.air ? 6 : 1.2);
+        e.obj.scale.multiplyScalar(1 - dt * 0.6);
+        if (e.dying <= 0) { this.scene.remove(e.obj); this.enemies.splice(i, 1); this.byId.delete(e.id); }
+        continue;
+      }
+      if (e.net) {
+        e.pos.lerp(e.net, k);
+        e.obj.position.copy(e.pos);
+        const ry = e.netRy ?? 0; let d = ry - e.obj.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d));
+        e.obj.rotation.y += d * k;
+        if (e.netAnim === 2 && e.cur !== 'Attack') this.play(e, 'Attack');
+        else if (e.netAnim !== 2 && (e.cur !== 'Attack' || !e.acts.Attack?.isRunning())) this.play(e, e.netAnim === 1 ? 'Walk' : 'Idle');
+      }
+      if (e.flash > 0) { e.flash -= dt; e.obj.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) ((m.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.5); }); }
+      else if (e.flash > -0.2) { e.flash -= dt; e.obj.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) ((m.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.55); }); }
     }
   }
 
@@ -930,8 +1195,15 @@ export class FpsGame {
       s.mesh.position.copy(s.pos);
       let hit = false;
       if (s.enemy) {
-        const p = this.eye(); p.y -= VEHICLE[this.mode].eye * 0.4;
-        if (s.pos.distanceTo(p) < VEHICLE[this.mode].radius + 0.6) { hit = true; if (!s.splash) this.hurtPlayer(s.dmg, s.bonus, 1, s.kind); }
+        if (s.kind !== 'ghost') {   // ghost = the host's shot mirrored to the guest (visual only)
+          const p = this.eye(); p.y -= VEHICLE[this.mode].eye * 0.4;
+          if (this.downT <= 0 && s.pos.distanceTo(p) < VEHICLE[this.mode].radius + 0.6) { hit = true; if (!s.splash) this.hurtPlayer(s.dmg, s.bonus, 1, s.kind); }
+          const a = this.ally;
+          if (!hit && a && !a.down && a.lastMsg > 0) {
+            const ap = a.pos.clone(); ap.y += VEHICLE[a.mode].eye * 0.6;
+            if (s.pos.distanceTo(ap) < VEHICLE[a.mode].radius + 0.6) { hit = true; if (!s.splash) this.hurtAlly(s.dmg, s.bonus, 1, s.kind); }
+          }
+        }
       } else {
         for (const e of this.enemies) {
           if (!e.alive || (e.k.air && !s.hitsAir)) continue;
@@ -942,7 +1214,8 @@ export class FpsGame {
       const ground = this.heightAt(s.pos.x, s.pos.z);
       if (s.pos.y <= ground) hit = true;
       if (hit || s.life <= 0) {
-        if (s.splash) this.splashAt(s.pos, s.splash, s.dmg, s.bonus, s.enemy, s.kind === 'grenade');
+        if (s.splash && s.kind !== 'ghost') this.splashAt(s.pos, s.splash, s.dmg, s.bonus, s.enemy, s.kind === 'grenade');
+        else if (s.splash) this.burst(s.pos, 0x9dff5a, 30, s.splash * 1.4);
         else this.burst(s.pos, s.color, 5, 1.5);
         this.scene.remove(s.mesh); s.mesh.geometry.dispose();
         this.shots.splice(i, 1);
@@ -965,8 +1238,11 @@ export class FpsGame {
       boss: bossE ? { name: DEFS[bossE.k.id].name, frac: bossE.hp / bossE.k.hp } : null,
       hurt: this.hurt, hitmark: this.hitmark, yaw: this.yaw,
       radar: [...this.enemies.filter(e => e.alive).map(e => ({ x: e.pos.x - this.pos.x, z: e.pos.z - this.pos.z, air: e.k.air > 0, big: !!e.k.structure || e.k.massive })),
-        ...this.pickups.map(p => ({ x: p.pos.x - this.pos.x, z: p.pos.z - this.pos.z, air: false, big: false, pod: true }))],
-      prompt: pk ? `Press E to board the ${pk.mode === 'titan' ? 'Titan' : 'Juggernaut'}` : this.mode !== 'foot' ? 'E: exit mech' : '',
+        ...this.pickups.map(p => ({ x: p.pos.x - this.pos.x, z: p.pos.z - this.pos.z, air: false, big: false, pod: true })),
+        ...(this.ally && this.ally.lastMsg > 0 ? [{ x: this.ally.pos.x - this.pos.x, z: this.ally.pos.z - this.pos.z, air: false, big: false, ally: true }] : [])],
+      prompt: this.downT > 0 ? `DOWN — redeploying in ${Math.ceil(this.downT)} s` : pk ? `Press E to board the ${pk.mode === 'titan' ? 'Titan' : 'Juggernaut'}` : this.mode !== 'foot' ? 'E: exit mech' : '',
+      ally: this.ally && this.ally.lastMsg > 0 ? { name: this.ally.name, hp: this.ally.hp, maxHp: this.ally.maxHp, down: this.ally.down, mode: this.ally.mode } : null,
+      down: Math.max(0, this.downT), link: this.coop ? (this.coop.direct() ? 'P2P' : 'RELAY') : '',
     });
   }
 }
@@ -974,6 +1250,14 @@ export class FpsGame {
 /** requestPointerLock returns a promise that rejects without a fresh user gesture; the HUD prompt covers that case. */
 export function lockPointer(el: HTMLElement) {
   try { const r = el.requestPointerLock() as unknown as Promise<void> | undefined; r?.catch?.(() => { /* click to take control */ }); } catch { /* older browsers throw */ }
+}
+function nameTex(name: string) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d')!;
+  g.font = 'bold 30px Rajdhani, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(6,14,24,0.65)'; g.beginPath(); g.roundRect(8, 10, 240, 44, 10); g.fill();
+  g.fillStyle = '#5ef0ff'; g.fillText(name.slice(0, 16), 128, 33);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 let _flash: THREE.Texture | null = null;
 function flashTex() {

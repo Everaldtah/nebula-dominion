@@ -76,15 +76,25 @@ A first-person campaign played only with Vanguard Directorate forces. You are Em
 - **Controls:** WASD to move, Shift to sprint, Space to jump, mouse to aim, LMB to fire. 1/2 switches between rifle and grenades, R reloads (or calls the Solar Lance in Titanfall), Q is Overdrive, E boards or exits a mech, F toggles Anchor Mode, and Esc pauses.
 - **Environment art is AI-generated on Kaggle**, like the units: SDXL ground textures, sky and planet map, plus SDXL→TRELLIS 3D props (fungus trees, bone arches, spires, egg clutches, crystals, the dropship wreck, the flagship and the dropship). See `assetgen/envconcepts/` and `assetgen/build_env.py`.
 
+### Online co-op
+
+The Operation Iron Descent menu has an **Online co-op** panel. Everyone who has Iron Descent open, on the website or in the Windows app, shows up there automatically. Invite a player to form a squad: the host picks the mission and difficulty, and both players drop in together.
+
+- **Lobby.** Presence and invites travel over two public MQTT brokers (HiveMQ and EMQX, over WSS). Each record is retained with a last-will message, so players appear the moment they open the game and disappear when they close it. Vercel's stateless functions can't hold a live game connection, so the lobby doesn't run on Vercel.
+- **Gameplay data** flows **peer-to-peer over WebRTC**: an ordered channel for events and an unordered one for state. If a direct connection can't be made, traffic falls back to the broker relay.
+- **Host-authoritative.** The host simulates the Kyrrh, the waves and the objectives, and streams snapshots at about 15 Hz. The partner renders everything on their own GPU and sends back their position and their hits (bullets, grenades, the Solar Lance).
+- **Co-op rules.** The Kyrrh hunt the nearest player, and swarms are 1.5× larger. Each player gets their own mech drop pods. A downed player redeploys after 10 s, and the mission fails only when both are down.
+- **Tests.** `node tests/e2e/coop.mjs [url] [relay]` plays a two-player session over P2P or the relay. `node tests/e2e/coop_cross.mjs` pairs the installed Windows app with a browser.
+
 ### Windows desktop app
 
 `desktop/` packages Iron Descent as a standalone Windows app with Electron. It launches fullscreen on the discrete GPU straight into the campaign; F11 toggles windowed mode and *Quit to desktop* exits.
 
 ```bash
-cd desktop && npm install && node build.mjs   # web build -> FPS-only assets -> IronDescent.exe
+cd desktop && npm install && node build.mjs [--installer]   # web build -> FPS-only assets -> IronDescent.exe (+ IronDescent-Setup.exe)
 ```
 
-The build installs to `%LOCALAPPDATA%\Programs\IronDescent` and adds Desktop and Start-menu shortcuts. `node tests/e2e/desktop_app.mjs` smoke-tests the installed app.
+The website's **⬇ Windows app** button downloads `IronDescent-Setup.exe` from the GitHub release. The local build installs to `%LOCALAPPDATA%\Programs\IronDescent` and adds Desktop and Start-menu shortcuts. `node tests/e2e/desktop_app.mjs` smoke-tests the installed app.
 
 ## Modes and performance
 

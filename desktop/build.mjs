@@ -16,7 +16,7 @@ run('npx vite build', WEB);
 
 // 2. copy only what the FPS campaign needs (the RTS sprite sheets and unused models stay out: ~100 MB -> ~30 MB)
 const FPS_MODELS = ['skitterling', 'carapid', 'quillback', 'wyvern', 'behemoth', 'gravemaw', 'matron', 'thorn', 'nest', 'throne',
-  'juggernaut', 'titan', 'wasp', 'dreadnought'];
+  'juggernaut', 'titan', 'wasp', 'dreadnought', 'trooper'];
 fs.rmSync(GAME, { recursive: true, force: true });
 fs.cpSync(path.join(WEB, 'dist'), GAME, {
   recursive: true,
@@ -36,6 +36,24 @@ const [appDir] = await packager({
   appCopyright: 'EveraldTah', win32metadata: { CompanyName: 'EveraldTah', FileDescription: 'Nebula Dominion: Iron Descent', ProductName: 'Nebula Dominion: Iron Descent' },
 });
 console.log('packaged:', appDir);
+
+// 3b. Windows installer (NSIS) for the website's download button: node build.mjs --installer
+if (process.argv.includes('--installer')) {
+  const { build: ebuild, Platform, Arch } = await import('electron-builder');
+  const files = await ebuild({
+    targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), prepackaged: appDir,
+    config: {
+      appId: 'com.everaldtah.irondescent', productName: 'Nebula Dominion - Iron Descent', directories: { output: path.join(HERE, 'out', 'installer') },
+      win: { icon: path.join(HERE, 'icon.ico'), signAndEditExecutable: false },
+      nsis: {
+        oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true,
+        shortcutName: 'Nebula Dominion - Iron Descent', artifactName: 'IronDescent-Setup.exe',
+        installerIcon: path.join(HERE, 'icon.ico'), uninstallerIcon: path.join(HERE, 'icon.ico'), runAfterFinish: true,
+      },
+    },
+  });
+  console.log('installer:', files.filter(f => f.endsWith('.exe')).join(', '));
+}
 
 // 4. install + shortcuts
 if (!process.argv.includes('--no-install')) {
