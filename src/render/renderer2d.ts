@@ -3,6 +3,7 @@ import { DT } from '../sim/data';
 import type { Entity, Game } from '../sim/game';
 import { drawBuilding, drawGeyser, drawMineral, TILE, UNIT_ART } from './sprites';
 import { TerrainRenderer } from './terrain';
+import { atlas } from './atlas';
 
 export interface Camera { x: number; y: number; zoom: number; w: number; h: number }
 export interface Ghost { defId: string; tx: number; ty: number; valid: boolean }
@@ -15,6 +16,7 @@ export interface ViewState {
   ghost: Ghost | null;
   markers: { x: number; y: number; t: number; color: string }[];
   targeting: string | null;
+  spectator?: boolean;
 }
 
 export class Renderer2D {
@@ -62,7 +64,7 @@ export class Renderer2D {
     this.time += dt;
     this.frame++;
     const t = this.time;
-    if (this.frame % 3 === 1) this.updateFog(me);
+    if (this.frame % 3 === 1 && !v.spectator) this.updateFog(me);
     if (this.frame % 15 === 1) this.updateCreep();
 
     c.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -96,55 +98,58 @@ export class Renderer2D {
     for (const e of g.entities) {
       if (!e.alive || (e.type !== 'mineral' && e.type !== 'geyser')) continue;
       if (!inView(e.x, e.y, 3)) continue;
-      if (!(e.seenMask & (1 << me)) && !g.explored[me][Math.floor(e.y) * g.map.w + Math.floor(e.x)]) continue;
-      if (e.type === 'mineral') drawMineral(c, e.tx * TILE, e.ty * TILE, e.amount, e.id, t);
-      else if (!g.get(e.gasBuilding)) drawGeyser(c, e.tx * TILE, e.ty * TILE, t, e.amount);
-    }
-
-    // selection circles for buildings + buildings
-    for (const e of g.entities) {
-      if (!e.alive || !e.isBuilding || !inView(e.x, e.y, e.w)) continue;
-      if (e.owner !== me && !(e.seenMask & (1 << me))) continue;
-      const def = e.def!;
-      if (v.selected.has(e.id) || v.hover === e.id) {
-        c.strokeStyle = e.owner === me ? '#3dff6e' : '#ff4040';
-        c.lineWidth = v.selected.has(e.id) ? 2 : 1;
-        c.beginPath(); c.ellipse(e.x * TILE, e.y * TILE + 2, e.w * TILE * 0.62, e.w * TILE * 0.5, 0, 0, Math.PI * 2); c.stroke();
+      if (!v.spectator && !(e.seenMask & (1 << me)) && !g.explored[me][Math.floor(e.y) * g.map.w + Math.floor(e.x)]) continue;
+      if (e.type === 'mineral') {
+        if (atlas.has('mineral')) {
+          const flip = e.id % 2 === 1;
+          const k = 0.75 + 0.25 * Math.min(1, e.amount / 1500);
+          c.save(); c.translate(e.x * TILE, e.y * TILE); c.scale(flip ? -k : k, k);
+          atlas.draw(c, 'mineral', 0, 0, 0, 0, 0);
+          c.restore();
+        } else drawMineral(c, e.tx * TILE, e.ty * TILE, e.amount, e.id, t);
+      } else if (!g.get(e.gasBuilding)) {
+        if (!atlas.draw(c, 'geyser', e.x * TILE, e.y * TILE, 0, 0, 0)) drawGeyser(c, e.tx * TILE, e.ty * TILE, t, e.amount);
+        if (e.amount > 0) this.vent(e.x, e.y, t + e.id);
       }
-      if (def.gas) { const gy = g.get(e.geyser); if (gy) drawGeyser(c, e.tx * TILE, e.ty * TILE, t, gy.amount); }
-      c.fillStyle = 'rgba(0,0,0,0.3)';
-      c.fillRect(e.tx * TILE + 4, e.ty * TILE + 6, e.w * TILE, e.h * TILE);
-      drawBuilding(c, def.id, def.race, e.tx * TILE, e.ty * TILE, def.size, g.players[e.owner].color, {
-        t: t + e.id, progress: e.progress, built: e.built, working: e.queue.length > 0 || e.eggs.length > 0, powered: e.powered, seed: e.id % 7,
-        larva: e.larva, eggs: e.eggs.length, broodPulse: e.broodTimer > 0,
-      });
-      if (e.hp < e.maxHp * 0.35 && e.built) this.smoke(e.x, e.y, t + e.id, def.race);
     }
 
-    // units: ground then air
-    const ground: Entity[] = [], air: Entity[] = [];
+    // buildings + ground units share one depth-sorted pass (3D sprites overlap)
+    const drawables: { y: number; e: Entity }[] = [];
+    const air: Entity[] = [];
     for (const e of g.entities) {
-      if (!e.alive || e.type !== 'unit' || e.hidden) continue;
-      if (!inView(e.x, e.y, e.radius + 1)) continue;
-      if (e.owner !== me && !g.isVisibleTo(me, e)) continue;
-      (e.isAir ? air : ground).push(e);
+      if (!e.alive || !e.def || e.hidden) continue;
+      if (e.isBuilding) {
+        if (!inView(e.x, e.y, e.w)) continue;
+        if (!v.spectator && e.owner !== me && !(e.seenMask & (1 << me))) continue;
+        drawables.push({ y: e.ty + e.h - 0.35, e });
+      } else if (e.type === 'unit') {
+        if (!inView(e.x, e.y, e.radius + 2)) continue;
+        if (!v.spectator && e.owner !== me && !g.isVisibleTo(me, e)) continue;
+        if (e.isAir) air.push(e); else drawables.push({ y: e.y, e });
+      }
     }
-    ground.sort((a, b) => a.y - b.y);
-    for (const e of ground) this.drawUnit(e, v, t);
-    // heal beams / channel beams
-    for (const e of [...ground, ...air]) {
+    // selection rings on the ground first
+    for (const { e } of drawables) this.ring(e, v);
+    drawables.sort((a, b) => a.y - b.y);
+    for (const { e } of drawables) {
+      if (e.isBuilding) this.drawBuildingEntity(e, t);
+      else this.drawUnit(e, v, t);
+    }
+    // heal beams
+    for (const { e } of drawables) {
       if (e.healTarget) {
         const h = g.get(e.healTarget);
-        if (h) { c.strokeStyle = `rgba(60,255,140,${0.5 + 0.3 * Math.sin(t * 20)})`; c.lineWidth = 2; c.beginPath(); c.moveTo(e.x * TILE, e.y * TILE); c.lineTo(h.x * TILE, h.y * TILE); c.stroke(); }
+        if (h) { c.strokeStyle = `rgba(60,255,140,${0.5 + 0.3 * Math.sin(t * 20)})`; c.lineWidth = 2; c.beginPath(); c.moveTo(e.x * TILE, e.y * TILE - 10); c.lineTo(h.x * TILE, h.y * TILE - 10); c.stroke(); }
       }
     }
     for (const e of air) {
-      // shadow
-      c.fillStyle = 'rgba(0,0,0,0.3)';
-      c.beginPath(); c.ellipse(e.x * TILE + 10, e.y * TILE + 22, e.radius * TILE * 0.9, e.radius * TILE * 0.5, 0, 0, Math.PI * 2); c.fill();
+      // ground shadow under the flyer
+      c.fillStyle = 'rgba(0,0,0,0.28)';
+      c.beginPath(); c.ellipse(e.x * TILE + 8, e.y * TILE + 6, e.radius * TILE * 0.95, e.radius * TILE * 0.55, 0, 0, Math.PI * 2); c.fill();
+      this.ring(e, v);
     }
     air.sort((a, b) => a.y - b.y);
-    for (const e of air) this.drawUnit(e, v, t, -12);
+    for (const e of air) this.drawUnit(e, v, t, atlas.has(e.def!.id) ? 0 : -12);
 
     // rally lines of selected own buildings
     for (const e of sel) {
@@ -172,8 +177,8 @@ export class Renderer2D {
       if (!e.alive || !e.def || e.hidden || e.type === 'mineral' || e.type === 'geyser') continue;
       const show = v.selected.has(e.id) || v.hover === e.id || e.hp < e.maxHp || (e.maxShields && e.shields < e.maxShields) || (e.isBuilding && !e.built) || (e.isBuilding && e.queue.length);
       if (!show) continue;
-      if (e.type === 'unit' && e.owner !== me && !g.isVisibleTo(me, e)) continue;
-      if (e.isBuilding && e.owner !== me && !(e.seenMask & (1 << me))) continue;
+      if (!v.spectator && e.type === 'unit' && e.owner !== me && !g.isVisibleTo(me, e)) continue;
+      if (!v.spectator && e.isBuilding && e.owner !== me && !(e.seenMask & (1 << me))) continue;
       const r = e.isRect ? e.w / 2 : e.radius;
       if (!inView(e.x, e.y, r + 1)) continue;
       this.bars(e, r, e.isAir ? -12 : 0, me);
@@ -181,7 +186,7 @@ export class Renderer2D {
 
     // fog
     c.imageSmoothingEnabled = true;
-    c.drawImage(this.fog, 0, 0, g.map.w * TILE, g.map.h * TILE);
+    if (!v.spectator) c.drawImage(this.fog, 0, 0, g.map.w * TILE, g.map.h * TILE);
 
     // ghost
     if (v.ghost) {
@@ -227,32 +232,150 @@ export class Renderer2D {
     c.globalAlpha = 1;
   }
 
+  private ring(e: Entity, v: ViewState) {
+    const c = this.c;
+    if (!(v.selected.has(e.id) || v.hover === e.id)) return;
+    const col = v.spectator ? (this.game.players[e.owner]?.color ?? '#ffe04a') : e.owner === v.me ? '#3dff6e' : e.owner < 0 ? '#ffe04a' : '#ff4040';
+    c.strokeStyle = col;
+    c.lineWidth = v.selected.has(e.id) ? 2 : 1;
+    const rx = e.isRect ? e.w * TILE * 0.6 : e.radius * TILE * 1.2, ry = rx * 0.62;
+    c.beginPath(); c.ellipse(e.x * TILE, e.isRect ? e.y * TILE + e.h * TILE * 0.12 : e.y * TILE, rx, ry, 0, 0, Math.PI * 2); c.stroke();
+  }
+
+  private drawBuildingEntity(e: Entity, t: number) {
+    const c = this.c, g = this.game, def = e.def!;
+    const team = Math.max(0, e.owner) % 2;
+    const frame = Math.floor((t + e.id * 0.37) * 1.5);
+    if (def.gas) { const gy = g.get(e.geyser); if (gy) { if (!atlas.draw(c, 'geyser', gy.x * TILE, gy.y * TILE, 0, 0, 0)) drawGeyser(c, e.tx * TILE, e.ty * TILE, t, gy.amount); } }
+    if (atlas.has(def.id)) {
+      const px = e.x * TILE, py = e.y * TILE;
+      if (!e.built) {
+        const p = e.progress;
+        if (def.race === 'directorate') {
+          atlas.draw(c, def.id, px, py, 0, 0, team, 0.9, Math.max(0.08, p));
+          this.scaffold(e, p);
+        } else if (def.race === 'kyrrh') {
+          c.save(); c.translate(px, py); const k = 0.55 + 0.45 * p; c.scale(k, k);
+          atlas.draw(c, def.id, 0, 0, 0, 0, team, 0.55 + 0.45 * p); c.restore();
+          c.globalAlpha = 0.5 * (1 - p); c.fillStyle = '#5a2352'; c.beginPath(); c.ellipse(px, py, e.w * TILE * 0.5, e.w * TILE * 0.38, 0, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1;
+        } else {
+          atlas.draw(c, def.id, px, py, 0, 0, team, 0.25 + 0.6 * p);
+          c.globalCompositeOperation = 'lighter';
+          c.globalAlpha = 0.35 + 0.15 * Math.sin(t * 6); c.fillStyle = '#5ef0ff';
+          c.beginPath(); c.ellipse(px, py, e.w * TILE * 0.55, e.w * TILE * 0.42, 0, 0, Math.PI * 2); c.fill();
+          c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+        }
+      } else {
+        atlas.draw(c, def.id, px, py, 0, frame, team);
+        if (def.race === 'aethel' && def.needsPower && !e.powered) {
+          c.fillStyle = 'rgba(0,0,30,0.45)'; c.beginPath(); c.ellipse(px, py, e.w * TILE * 0.5, e.w * TILE * 0.4, 0, 0, Math.PI * 2); c.fill();
+          c.fillStyle = '#ff5050'; c.font = 'bold 12px sans-serif'; c.textAlign = 'center'; c.fillText('UNPOWERED', px, py);
+        }
+        if (def.larvaHost) this.larva(e, t);
+      }
+    } else {
+      c.fillStyle = 'rgba(0,0,0,0.3)';
+      c.fillRect(e.tx * TILE + 4, e.ty * TILE + 6, e.w * TILE, e.h * TILE);
+      drawBuilding(c, def.id, def.race, e.tx * TILE, e.ty * TILE, def.size, g.players[e.owner].color, {
+        t: t + e.id, progress: e.progress, built: e.built, working: e.queue.length > 0 || e.eggs.length > 0, powered: e.powered, seed: e.id % 7,
+        larva: e.larva, eggs: e.eggs.length, broodPulse: e.broodTimer > 0,
+      });
+    }
+    if (e.hp < e.maxHp * 0.35 && e.built) this.smoke(e.x, e.y, t + e.id, def.race);
+  }
+
+  private scaffold(e: Entity, p: number) {
+    const c = this.c;
+    const x = e.tx * TILE, y = e.ty * TILE, w = e.w * TILE;
+    c.strokeStyle = 'rgba(255,190,90,0.55)'; c.lineWidth = 1.2;
+    const lift = w * 0.5 * p;
+    for (let i = 0; i <= 4; i++) { const px = x + (i / 4) * w; c.beginPath(); c.moveTo(px, y + w); c.lineTo(px, y + w - lift - w * 0.35); c.stroke(); }
+    for (let j = 0; j < 3; j++) { const py = y + w - (j / 2) * (lift + w * 0.35); c.beginPath(); c.moveTo(x, py); c.lineTo(x + w, py); c.stroke(); }
+    if (Math.random() < 0.35) { c.fillStyle = '#fff3a0'; c.fillRect(x + Math.random() * w, y + w - Math.random() * (lift + 10), 2, 2); }
+  }
+
+  private larva(e: Entity, t: number) {
+    const c = this.c;
+    const cx = e.x * TILE, cy = e.y * TILE, r = e.w * TILE * 0.5;
+    for (let i = 0; i < Math.min(e.larva, 19); i++) {
+      const a = i * 2.39 + e.id, rr = r * 1.02 + (i % 3) * 4;
+      const lx = cx + Math.cos(a) * rr, ly = cy + Math.sin(a) * rr * 0.7 + Math.sin(t * 5 + i) * 1.2;
+      c.fillStyle = 'rgba(0,0,0,0.3)'; c.beginPath(); c.ellipse(lx + 1, ly + 2, 4, 2.2, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#d8c79a'; c.strokeStyle = '#6a5a3a'; c.lineWidth = 1;
+      c.beginPath(); c.ellipse(lx, ly, 4.2, 2.5, a + Math.sin(t * 6 + i) * 0.4, 0, Math.PI * 2); c.fill(); c.stroke();
+    }
+    for (let i = 0; i < Math.min(e.eggs.length, 19); i++) {
+      const a = i * 2.39 + e.id + 1.2;
+      const ex = cx + Math.cos(a) * r * 1.1, ey = cy + Math.sin(a) * r * 0.8;
+      c.fillStyle = '#6a3a5e'; c.strokeStyle = '#2a1025'; c.beginPath(); c.ellipse(ex, ey - 3, 5, 6.5, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+      c.fillStyle = `rgba(200,255,90,${0.25 + 0.2 * Math.sin(t * 4 + i)})`; c.beginPath(); c.arc(ex, ey - 4, 2.5, 0, Math.PI * 2); c.fill();
+    }
+  }
+
+  private vent(x: number, y: number, t: number) {
+    const c = this.c;
+    for (let i = 0; i < 3; i++) {
+      const ph = (t * 0.35 + i / 3) % 1;
+      c.globalAlpha = (1 - ph) * 0.25;
+      c.fillStyle = '#9fe8b8';
+      c.beginPath(); c.arc(x * TILE + Math.sin(i * 3 + t) * 6, y * TILE - 10 - ph * 34, 6 + ph * 14, 0, Math.PI * 2); c.fill();
+    }
+    c.globalAlpha = 1;
+  }
+
   private drawUnit(e: Entity, v: ViewState, t: number, lift = 0) {
     const c = this.c, g = this.game;
-    const px = e.x * TILE, py = e.y * TILE + lift + (e.isAir ? Math.sin(t * 2 + e.id) * 2 : 0);
-    const r = e.radius * TILE;
-    if (v.selected.has(e.id) || v.hover === e.id) {
-      c.strokeStyle = e.owner === v.me ? '#3dff6e' : e.owner < 0 ? '#ffe04a' : '#ff4040';
-      c.lineWidth = v.selected.has(e.id) ? 2 : 1;
-      c.beginPath(); c.ellipse(px, e.y * TILE + r * 0.35, r * 1.15, r * 0.8, 0, 0, Math.PI * 2); c.stroke();
+    const def = e.def!;
+    const sid = def.id === 'juggernaut' && (e.sieged ? e.transition <= 1.35 : e.transition > 1.35) && atlas.has('juggernaut_sieged') ? 'juggernaut_sieged' : def.id;
+    const team = Math.max(0, e.owner) % 2;
+    const m = atlas.meta(sid);
+    if (m) {
+      const frame = m.air > 0 ? Math.floor((t + e.id * 0.31) * 5) : e.moving || e.curSpeed > 0.05 ? Math.floor(e.walkPhase / 1.35) : 0;
+      const bob = m.air > 0 ? Math.sin(t * 2 + e.id) * 2 : 0;
+      atlas.draw(c, sid, e.x * TILE, e.y * TILE + bob, e.facing, frame, team);
+      if (e.attackAnim > 0.05) this.flashAt(e.x * TILE + Math.cos(e.facing) * e.radius * TILE * 1.1, e.y * TILE - (m.air * TILE * 0.7 + m.height * TILE * 0.4) + Math.sin(e.facing) * e.radius * TILE * 0.8, def.race);
+      if (e.overdrive > 0) { c.globalAlpha = 0.3; c.fillStyle = '#ff3030'; c.beginPath(); c.arc(e.x * TILE, e.y * TILE - 8, e.radius * TILE * 1.2, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; }
+      if (e.channel) this.flashAt(e.x * TILE + Math.cos(e.facing) * 40, e.y * TILE - m.air * TILE * 0.7, 'directorate', 1.8);
+    } else {
+      const px = e.x * TILE, py = e.y * TILE + lift + (e.isAir ? Math.sin(t * 2 + e.id) * 2 : 0);
+      const r = e.radius * TILE;
+      const art = UNIT_ART[def.id];
+      c.save();
+      c.translate(px, py);
+      c.rotate(e.facing);
+      art?.(c, r, g.players[e.owner]?.color ?? '#ccc', {
+        t: t + e.id * 0.37, moving: e.moving, attacking: e.attackAnim > 0.05, sieged: e.sieged, transition: e.transition,
+        carry: e.carry ? e.carryType : null, working: !!e.constructing || (e.orders[0]?.type === 'gather' && e.orders[0].phase === 'mining'),
+        seed: e.id, overdrive: e.overdrive > 0, channel: !!e.channel,
+      });
+      c.restore();
     }
-    const art = UNIT_ART[e.def!.id];
-    c.save();
-    c.translate(px, py);
-    c.rotate(e.facing);
-    const flash = g.tick - e.lastHit < 3;
-    art?.(c, r, g.players[e.owner]?.color ?? '#ccc', {
-      t: t + e.id * 0.37, moving: e.moving, attacking: e.attackAnim > 0.05, sieged: e.sieged, transition: e.transition,
-      carry: e.carry ? e.carryType : null, working: !!e.constructing || (e.orders[0]?.type === 'gather' && e.orders[0].phase === 'mining'),
-      seed: e.id, overdrive: e.overdrive > 0, channel: !!e.channel,
-    });
-    c.restore();
-    if (flash && e.shields > 0) {
+    if (e.carry && m) { c.fillStyle = e.carryType === 'm' ? '#6fd6ff' : '#5dffa0'; c.beginPath(); c.arc(e.x * TILE - 6, e.y * TILE - 14, 3, 0, Math.PI * 2); c.fill(); }
+    if (g.tick - e.lastHit < 3 && e.shields > 0) {
       c.strokeStyle = 'rgba(120,200,255,0.8)'; c.lineWidth = 2;
-      c.beginPath(); c.arc(px, py, r * 1.2, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.arc(e.x * TILE, e.y * TILE - (m ? m.height * TILE * 0.3 + m.air * TILE * 0.7 : 0), e.radius * TILE * 1.25, 0, Math.PI * 2); c.stroke();
     }
-    if (e.bornTick > g.tick - 12) { c.globalAlpha = 1 - (g.tick - e.bornTick) / 12; c.fillStyle = '#fff'; c.beginPath(); c.arc(px, py, r * 1.3, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; }
-    void DT;
+    if (e.bornTick > g.tick - 12) { c.globalAlpha = (1 - (g.tick - e.bornTick) / 12) * 0.8; c.fillStyle = '#fff'; c.beginPath(); c.arc(e.x * TILE, e.y * TILE - 6, e.radius * TILE * 1.3, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; }
+    void v;
+  }
+
+  private glowCache = new Map<string, HTMLCanvasElement>();
+  private flashAt(x: number, y: number, race: string, scale = 1) {
+    const col = race === 'kyrrh' ? '200,255,90' : race === 'aethel' ? '94,240,255' : '255,210,120';
+    let gl = this.glowCache.get(col);
+    if (!gl) {
+      gl = document.createElement('canvas'); gl.width = gl.height = 64;
+      const cx = gl.getContext('2d')!;
+      const gr = cx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, `rgba(${col},0.9)`); gr.addColorStop(1, `rgba(${col},0)`);
+      cx.fillStyle = gr; cx.fillRect(0, 0, 64, 64);
+      this.glowCache.set(col, gl);
+    }
+    const c = this.c;
+    c.globalCompositeOperation = 'lighter';
+    const s = 22 * scale;
+    c.drawImage(gl, x - s / 2, y - s / 2, s, s);
+    c.globalCompositeOperation = 'source-over';
   }
 
   private bars(e: Entity, r: number, lift: number, me: number) {

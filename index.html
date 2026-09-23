@@ -20,10 +20,14 @@
       <h1 class="logo">NEBULA<span>DOMINION</span></h1>
       <p class="sub">Three races. One contested world. Command the war.</p>
       <div class="panel">
-        <h3>Choose your race</h3>
+        <div class="modes"><label><input type="radio" name="mode" value="play" checked /> Play vs AI</label><label><input type="radio" name="mode" value="spectate" /> Watch AI vs AI</label></div>
+        <h3 id="race-title">Choose your race</h3>
         <div id="race-picks" class="race-picks"></div>
         <div class="row">
-          <label>Opponent
+          <label id="p1-diff-wrap" class="hidden">Blue AI difficulty
+            <select id="difficulty1"><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard" selected>Hard</option></select>
+          </label>
+          <label id="opp-label">Opponent
             <select id="opp-race"><option value="random">Random</option><option value="directorate">Vanguard Directorate</option><option value="kyrrh">Kyrrh Swarm</option><option value="aethel">Aethel Concord</option></select>
           </label>
           <label>Difficulty
@@ -39,6 +43,8 @@
           <button id="settings-btn">Audio</button>
         </div>
       </div>
+      <p id="asset-load" class="foot"></p>
+      <p id="gpu-note" class="foot"></p>
       <p class="foot">Canvas 2D units · Three.js 3D effects · Procedural Web Audio · TypeScript simulation</p>
     </div>
   </div>
@@ -111,11 +117,13 @@
       </div>
     </div>
     <div id="msgs"></div>
+    <div id="spec-bar" class="hidden"><div id="spec-players"></div><div class="speeds"><button data-speed="0">❚❚</button><button data-speed="0.5">½×</button><button data-speed="1" class="on">1×</button><button data-speed="2">2×</button><button data-speed="4">4×</button><button data-speed="8">8×</button><button data-speed="16">16×</button><button data-speed="99">MAX</button><button id="director-btn" class="on" title="Camera follows the action">🎥 Director</button></div></div>
     <div id="alert-text"></div>
     <div id="bottom">
       <div id="mm-wrap"><canvas id="minimap" width="200" height="200"></canvas></div>
       <div id="info">
         <canvas id="portrait"></canvas>
+        <canvas id="portrait2d" class="hidden" width="260" height="260"></canvas>
         <div id="info-body"></div>
       </div>
       <div id="cmd"></div>
@@ -123,6 +131,8 @@
     <div id="tooltip" class="hidden"></div>
     <div id="perf" class="hidden"></div>
   </div>
+
+  <div id="loading" class="screen overlay hidden"><div class="panel"><h3>Deploying battlefield…</h3><div class="progress" style="width:320px"><div id="loading-bar" style="width:0%"></div></div></div></div>
 
   <div id="end" class="screen overlay hidden">
     <div class="panel">

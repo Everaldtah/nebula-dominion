@@ -1,0 +1,103 @@
+"""Kaggle job B: TRELLIS (MIT) image -> textured GLB for every picked concept, one worker per T4.
+Inputs: concept PNGs from the nd-assetgen-concepts kernel output. Outputs /kaggle/working/glb/<id>.glb."""
+import json, os, sys, time, subprocess, urllib.request, traceback, glob
+
+TOPIC = os.environ.get("NTFY_TOPIC", "nd-trellis")
+PICKS = dict(p.split(":") for p in os.environ.get("PICKS", "").split(",") if p)
+ONLY = [s for s in os.environ.get("ONLY", "").split(",") if s]
+OUT = "/kaggle/working/glb"
+os.makedirs(OUT, exist_ok=True)
+
+
+def publish(phase, **extra):
+    print("PHASE", phase, extra, flush=True)
+    try:
+        body = json.dumps({"topic": TOPIC, "title": "trellis " + phase, "message": json.dumps({"phase": phase, **extra})[:3800]}).encode()
+        urllib.request.urlopen(urllib.request.Request("https://ntfy.sh", data=body, headers={"Content-Type": "application/json"}), timeout=15).read()
+    except Exception as e:
+        print("ntfy failed", e)
+
+
+def sh(cmd, name, fatal=True, cwd=None):
+    t = time.time()
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd, env={**os.environ, "TORCH_CUDA_ARCH_LIST": "7.5", "MAX_JOBS": "4"})
+    ok = r.returncode == 0
+    publish("step", name=name, ok=ok, secs=round(time.time() - t), tail=(r.stdout + r.stderr)[-900:] if not ok else "")
+    if not ok and fatal:
+        raise SystemExit(f"step failed: {name}")
+    return ok
+
+
+WORKER = r'''
+import os, sys, json, time, traceback, urllib.request
+os.environ["ATTN_BACKEND"] = "xformers"
+os.environ["SPCONV_ALGO"] = "native"
+sys.path.insert(0, "/tmp/TRELLIS")
+TOPIC = os.environ["NTFY_TOPIC"]
+def publish(phase, **extra):
+    try:
+        body = json.dumps({"topic": TOPIC, "message": json.dumps({"phase": phase, **extra})[:3800]}).encode()
+        urllib.request.urlopen(urllib.request.Request("https://ntfy.sh", data=body, headers={"Content-Type": "application/json"}), timeout=15).read()
+    except Exception: pass
+import torch
+from PIL import Image
+from trellis.pipelines import TrellisImageTo3DPipeline
+from trellis.utils import postprocessing_utils
+pipe = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
+pipe.cuda()
+jobs = json.loads(os.environ["JOBS"])
+for aid, path in jobs:
+    t0 = time.time()
+    try:
+        img = Image.open(path)
+        out = pipe.run(img, seed=1, sparse_structure_sampler_params={"steps": 12, "cfg_strength": 7.5}, slat_sampler_params={"steps": 12, "cfg_strength": 3})
+        glb = postprocessing_utils.to_glb(out["gaussian"][0], out["mesh"][0], simplify=0.93, texture_size=1024, verbose=False)
+        glb.export(f"/kaggle/working/glb/{aid}.glb")
+        publish("asset", id=aid, secs=round(time.time() - t0), gpu=os.environ.get("CUDA_VISIBLE_DEVICES"))
+    except Exception:
+        publish("asset-error", id=aid, trace=traceback.format_exc()[-1200:])
+    torch.cuda.empty_cache()
+publish("worker-done", gpu=os.environ.get("CUDA_VISIBLE_DEVICES"))
+'''
+
+try:
+    publish("boot")
+    t0 = time.time()
+    sh(f"{sys.executable} -m pip install -q uv", "uv")
+    sh("uv venv -q -p 3.10 --seed /tmp/venv", "venv-py310")
+    py = "/tmp/venv/bin/python"
+    sh(f"{py} -m pip install -q torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121", "torch-2.4")
+    sh(f"{py} -m pip install -q xformers==0.0.27.post2 --index-url https://download.pytorch.org/whl/cu121", "xformers")
+    sh(f"{py} -m pip install -q 'numpy<2' pillow imageio imageio-ffmpeg tqdm easydict opencv-python-headless scipy ninja rembg onnxruntime trimesh xatlas pyvista pymeshfix igraph plyfile open3d 'transformers<4.50' huggingface_hub safetensors", "basic-deps")
+    sh(f"{py} -m pip install -q git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8", "utils3d")
+    sh(f"{py} -m pip install -q spconv-cu120", "spconv")
+    sh(f"{py} -m pip install -q kaolin==0.17.0 -f https://nvidia-kaolin.s3.us-east-2.amazonaws.com/torch-2.4.0_cu121.html", "kaolin", fatal=False)
+    sh("git clone -q --recurse-submodules https://github.com/microsoft/TRELLIS.git /tmp/TRELLIS", "clone-trellis")
+    sh("git clone -q https://github.com/NVlabs/nvdiffrast.git /tmp/nvdiffrast", "clone-nvdiffrast")
+    sh(f"{py} -m pip install -q --no-build-isolation /tmp/nvdiffrast", "nvdiffrast")
+    sh("git clone -q https://github.com/autonomousvision/mip-splatting.git /tmp/mip-splatting", "clone-mip")
+    sh(f"{py} -m pip install -q --no-build-isolation /tmp/mip-splatting/submodules/diff-gaussian-rasterization/", "diff-gaussian-rasterization")
+    publish("installed", minutes=round((time.time() - t0) / 60, 1))
+
+    src = glob.glob("/kaggle/input/**/concepts", recursive=True)
+    publish("inputs", dirs=src)
+    cdir = src[0]
+    ids = sorted({os.path.basename(p).rsplit("_", 1)[0] for p in glob.glob(f"{cdir}/*.png")})
+    if ONLY:
+        ids = [i for i in ids if i in ONLY]
+    jobs = [(i, f"{cdir}/{i}_{PICKS.get(i, '0')}.png") for i in ids]
+    open("/tmp/worker.py", "w").write(WORKER)
+    procs = []
+    for g in range(2):
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(g), "JOBS": json.dumps(jobs[g::2]), "NTFY_TOPIC": TOPIC, "ATTN_BACKEND": "xformers", "SPCONV_ALGO": "native"}
+        procs.append(subprocess.Popen([py, "/tmp/worker.py"], env=env, stdout=open(f"/tmp/worker{g}.log", "w"), stderr=subprocess.STDOUT))
+    for p in procs:
+        p.wait()
+    logs = {g: open(f"/tmp/worker{g}.log").read()[-3000:] for g in range(2)}
+    made = sorted(os.path.basename(p) for p in glob.glob(f"{OUT}/*.glb"))
+    publish("done", made=len(made), of=len(jobs), minutes=round((time.time() - t0) / 60, 1), logs=logs if len(made) < len(jobs) else "")
+    subprocess.run("rm -rf /tmp/TRELLIS", shell=True)
+except SystemExit:
+    raise
+except Exception:
+    publish("error", trace=traceback.format_exc()[-2000:])

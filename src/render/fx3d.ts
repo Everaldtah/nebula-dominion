@@ -38,6 +38,8 @@ export class FX3D {
   scene = new THREE.Scene();
   camera = new THREE.OrthographicCamera(0, 1, 0, -1, -2000, 2000);
   shake = 0;
+  /** 0..1 particle budget multiplier (software-rendering fallback uses fewer). */
+  quality = 1;
   private geo = new THREE.BufferGeometry();
   private pos = new Float32Array(MAX_P * 3);
   private col = new Float32Array(MAX_P * 3);
@@ -53,6 +55,10 @@ export class FX3D {
   private baseY = new Float32Array(MAX_P);
   private z = new Float32Array(MAX_P);
   private next = 0;
+  private active = new Int32Array(MAX_P);
+  private isActive = new Uint8Array(MAX_P);
+  private nActive = 0;
+  private pool = new Map<string, THREE.Mesh[]>();
   private mat: THREE.ShaderMaterial;
   private projs: Proj[] = [];
   private timed: Timed[] = [];
@@ -97,6 +103,7 @@ export class FX3D {
   // --------------------------------------------------------------- particles
   private emit(x: number, y: number, vx: number, vy: number, color: THREE.Color, size: number, life: number, opts: { grow?: number; grav?: number; drag?: number; vz?: number; z?: number; alpha?: number } = {}) {
     const i = this.next; this.next = (this.next + 1) % MAX_P;
+    if (!this.isActive[i]) { this.isActive[i] = 1; this.active[this.nActive++] = i; }
     this.pos[i * 3] = x; this.baseY[i] = -y; this.pos[i * 3 + 2] = 5;
     this.vel[i * 3] = vx; this.vel[i * 3 + 1] = -vy; this.vel[i * 3 + 2] = opts.vz ?? 0;
     this.z[i] = opts.z ?? 0;
@@ -112,6 +119,7 @@ export class FX3D {
   }
 
   burst(x: number, y: number, n: number, colors: string[], speed: number, size: number, life: number, opts: { grav?: number; up?: number; grow?: number; drag?: number } = {}) {
+    n = Math.max(1, Math.round(n * this.quality));
     for (let k = 0; k < n; k++) {
       const a = Math.random() * Math.PI * 2, s = speed * (0.3 + Math.random() * 0.7);
       this.emit(x, y, Math.cos(a) * s, Math.sin(a) * s * 0.7, COL(colors[k % colors.length]), size * (0.6 + Math.random() * 0.8), life * (0.6 + Math.random() * 0.6),
@@ -119,41 +127,58 @@ export class FX3D {
     }
   }
 
+  private take(kind: string, geo: THREE.BufferGeometry, color: string, opacity: number, wire = false): THREE.Mesh {
+    const list = this.pool.get(kind);
+    let m = list?.pop();
+    if (!m) {
+      m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, wireframe: wire }));
+      m.userData.kind = kind;
+      this.scene.add(m);
+    }
+    const mat = m.material as THREE.MeshBasicMaterial;
+    mat.color.set(color); mat.opacity = opacity;
+    m.visible = true;
+    m.rotation.set(0, 0, 0); m.scale.set(1, 1, 1);
+    return m;
+  }
+  private release(m: THREE.Object3D) {
+    m.visible = false;
+    const k = m.userData.kind as string;
+    if (!this.pool.has(k)) this.pool.set(k, []);
+    this.pool.get(k)!.push(m as THREE.Mesh);
+  }
+
   private ring(x: number, y: number, color: string, r0: number, r1: number, dur: number, a0 = 0.9) {
-    const m = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: COL(color), transparent: true, opacity: a0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    const m = this.take('ring', this.ringGeo, color, a0);
     m.position.set(x, -y, 4);
     m.scale.set(r0, r0 * 0.7, 1);
-    this.scene.add(m);
     this.timed.push({ mesh: m, t: 0, dur, kind: 'ring', s0: r0, s1: r1, a0 });
   }
 
   beam(x1: number, y1: number, x2: number, y2: number, color: string, width: number, dur: number, a0 = 1) {
-    const m = new THREE.Mesh(this.planeGeo, new THREE.MeshBasicMaterial({ color: COL(color), transparent: true, opacity: a0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    const m = this.take('beam', this.planeGeo, color, a0);
     const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy);
     m.position.set((x1 + x2) / 2, -(y1 + y2) / 2, 6);
     m.rotation.z = -Math.atan2(dy, dx);
     m.scale.set(L, width, 1);
-    this.scene.add(m);
     this.timed.push({ mesh: m, t: 0, dur, kind: 'beam', s0: width, s1: width * 0.2, a0 });
     // glow core
     this.emit(x2, y2, 0, 0, COL(color), width * 5, dur * 1.5, { alpha: 0.8 });
   }
 
   private pillar(x: number, y: number, color: string, r: number, h: number, dur: number) {
-    const m = new THREE.Mesh(this.cylGeo, new THREE.MeshBasicMaterial({ color: COL(color), transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    const m = this.take('pillar', this.cylGeo, color, 0.6);
     m.position.set(x, -y + h / 2, 3);
     m.scale.set(r, h, r);
     m.rotation.x = 0.35;
-    this.scene.add(m);
     this.timed.push({ mesh: m, t: 0, dur, kind: 'pillar', s0: r, s1: r * 0.2, a0: 0.6 });
   }
 
   private shieldFlash(x: number, y: number, r: number) {
-    const m = new THREE.Mesh(this.sphereGeo, new THREE.MeshBasicMaterial({ color: 0x66ccff, wireframe: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
+    const m = this.take('shield', this.sphereGeo, '#66ccff', 0.8, true);
     m.position.set(x, -y, 8);
     m.scale.setScalar(r);
     m.rotation.set(Math.random() * 3, Math.random() * 3, 0);
-    this.scene.add(m);
     this.timed.push({ mesh: m, t: 0, dur: 0.3, kind: 'shield', s0: r, s1: r * 1.15, a0: 0.8 });
   }
 
@@ -339,8 +364,13 @@ export class FX3D {
     }
 
     // particles
-    for (let i = 0; i < MAX_P; i++) {
-      if (this.life[i] <= 0) { if (this.alpha[i] !== 0) { this.alpha[i] = 0; this.size[i] = 0; } continue; }
+    for (let k = this.nActive - 1; k >= 0; k--) {
+      const i = this.active[k];
+      if (this.life[i] <= 0) {
+        this.alpha[i] = 0; this.size[i] = 0; this.isActive[i] = 0;
+        this.active[k] = this.active[--this.nActive];
+        continue;
+      }
       this.life[i] -= dt;
       const f = Math.max(0, this.life[i] / this.maxLife[i]);
       const d = Math.pow(this.drag[i], dt * 60);
@@ -364,7 +394,7 @@ export class FX3D {
       m.t += dt;
       const k = m.t / m.dur;
       const mat = (m.mesh as THREE.Mesh).material as THREE.MeshBasicMaterial;
-      if (k >= 1) { this.scene.remove(m.mesh); mat.dispose(); this.timed.splice(i, 1); continue; }
+      if (k >= 1) { this.release(m.mesh); this.timed.splice(i, 1); continue; }
       const e = 1 - Math.pow(1 - k, 3);
       if (m.kind === 'ring') { const s = m.s0 + (m.s1 - m.s0) * e; m.mesh.scale.set(s, s * 0.7, 1); mat.opacity = m.a0 * (1 - k); }
       else if (m.kind === 'beam') { m.mesh.scale.y = m.s0 + (m.s1 - m.s0) * k; mat.opacity = m.a0 * (1 - k); }
@@ -389,9 +419,9 @@ export class FX3D {
   }
 
   clear() {
-    for (const m of this.timed) this.scene.remove(m.mesh);
+    for (const m of this.timed) this.release(m.mesh);
     for (const d of this.debris) this.scene.remove(d.mesh);
     this.timed = []; this.debris = []; this.projs = []; this.delayed = [];
-    this.life.fill(0);
+    this.life.fill(0); this.alpha.fill(0); this.size.fill(0); this.isActive.fill(0); this.nActive = 0;
   }
 }

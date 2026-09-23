@@ -1,6 +1,8 @@
 import { ABILITIES, BUILD_MENUS, Cost, DEFS, LARVA_UNITS, RESEARCH, researchCost, researchTime } from '../sim/data';
 import type { Entity, Game } from '../sim/game';
 import { drawIcon } from '../render/sprites';
+import { atlas } from '../render/atlas';
+atlas.onReady(() => iconCache.clear());
 
 export interface Btn {
   id: string;
@@ -39,7 +41,7 @@ export function iconFor(id: string, color = '#3d9bff'): string {
   const g = c.createRadialGradient(32, 32, 4, 32, 32, 40);
   g.addColorStop(0, '#1c3550'); g.addColorStop(1, '#070d15');
   c.fillStyle = g; c.fillRect(0, 0, 64, 64);
-  if (def) drawIcon(c, id, def.race, 64, color, def.kind);
+  if (def && !atlas.icon(c, id, 64, color.toLowerCase() === '#ff4d4d' ? 1 : 0)) drawIcon(c, id, def.race, 64, color, def.kind);
   u = cv.toDataURL();
   iconCache.set(key, u);
   return u;

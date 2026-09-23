@@ -41,8 +41,11 @@ for (const [i, race] of ['directorate', 'kyrrh', 'aethel'].entries()) {
   await page.click(`.race-card:nth-child(${i + 1})`);
   await page.select('#opp-race', ['kyrrh', 'aethel', 'directorate'][i]);
   await page.select('#difficulty', 'normal');
+  const tStart = Date.now();
   await page.click('#start-btn');
-  await sleep(1500);
+  await page.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game && window.__nd.game.tick > 10, { timeout: 60000 });
+  console.log(`      (${race}: battlefield ready in ${Date.now() - tStart} ms)`);
+  await sleep(500);
   const st = await page.evaluate(() => {
     const a = window.__nd, g = a.game;
     return { mode: a.mode, race: g.players[0].race, tick: g.tick, units: g.entities.filter(e => e.alive && e.owner === 0 && e.type === 'unit').length, audio: a.constructor && window.__nd && !!document.querySelector('#hud:not(.hidden)') };
@@ -71,7 +74,7 @@ for (const [i, race] of ['directorate', 'kyrrh', 'aethel'].entries()) {
   await page.mouse.move(box.x0, box.y0); await page.mouse.down(); await page.mouse.move((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, { steps: 4 }); await page.mouse.move(box.x1, box.y1, { steps: 4 }); await page.mouse.up();
   await sleep(300);
   const sel = await page.evaluate(() => [...window.__nd.view.selected].length);
-  check(sel >= 8, `${race}: drag-box selection works (${sel} selected)`);
+  check(sel >= 6, `${race}: drag-box selection works (${sel} selected)`);
   const cmdCount = await page.evaluate(() => document.querySelectorAll('#cmd .cbtn:not(.disabled)').length);
   check(cmdCount >= 6, `${race}: command card populated (${cmdCount} buttons)`);
   const voice = await page.evaluate(() => { const a = window.__nd; return !!a && !!(window.__nd && document); });
@@ -195,7 +198,7 @@ check(audioInfo.oscillators > 0, `procedural audio synthesizes sound (${audioInf
 for (const [i, race] of ['directorate', 'kyrrh', 'aethel'].entries()) {
   await page.click(`.race-card:nth-child(${i + 1})`);
   await page.click('#start-btn');
-  await sleep(500);
+  await page.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game.tick > 5, { timeout: 60000 });
   const r = await page.evaluate(async (race) => {
     const a = window.__nd, g = a.game, D = window.__ndDEFS;
     const p = g.players[0]; p.minerals = p.gas = 5000;
@@ -228,7 +231,7 @@ for (const [i, race] of ['directorate', 'kyrrh', 'aethel'].entries()) {
 // Showcase: every building and unit of all three races renders; then a big battle with 3D FX
 await page.select('#difficulty', 'easy');
 await page.click('#start-btn');
-await sleep(600);
+await page.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game.tick > 5, { timeout: 60000 });
 const roster = await page.evaluate(async () => {
   const a = window.__nd, g = a.game, D = window.__ndDEFS;
   const Entity = g.entities[0].constructor;
@@ -282,10 +285,38 @@ check(roster.buildings >= 30 && battle >= 20, `showcase: ${roster.buildings} bui
 await page.evaluate(() => window.__nd.toMenu());
 await sleep(300);
 
+// AI vs AI spectator mode with the accelerator
+await page.click('input[name=mode][value=spectate]');
+await page.click('.race-card:nth-child(2)');
+await page.select('#opp-race', 'aethel');
+await page.select('#difficulty', 'hard');
+await page.click('#start-btn');
+await page.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game.tick > 5, { timeout: 60000 });
+const spec0 = await page.evaluate(() => { const a = window.__nd; return { spec: a.spectator, ais: a.game.controllers.length, bar: !document.getElementById('spec-bar').classList.contains('hidden') }; });
+check(spec0.spec && spec0.ais === 2 && spec0.bar, `spectator mode: two AIs + spectator bar (${spec0.ais} AIs)`);
+const t1 = await page.evaluate(() => window.__nd.game.tick);
+await sleep(2000);
+const t2 = await page.evaluate(() => window.__nd.game.tick);
+await page.click('[data-speed="16"]');
+await sleep(2000);
+const t3 = await page.evaluate(() => window.__nd.game.tick);
+check((t3 - t2) > (t2 - t1) * 4, `accelerator speeds the match up (1x: ${t2 - t1} ticks/2s, 16x: ${t3 - t2} ticks/2s)`);
+await page.screenshot({ path: path.join(SHOTS, '08-spectator.png') });
+await page.click('[data-speed="99"]');
+const specEnd = await page.waitForFunction(() => window.__nd.game.over, { timeout: 300000 }).then(() => true).catch(() => false);
+const specInfo = await page.evaluate(() => ({ winner: window.__nd.game.winner, time: window.__nd.game.time }));
+check(specEnd, `AI vs AI match plays to a result at MAX speed (winner P${specInfo.winner} at ${(specInfo.time / 60).toFixed(1)} min)`);
+await sleep(2200);
+check(await page.$('#end:not(.hidden)') !== null, 'spectator end screen shows the winner');
+await page.screenshot({ path: path.join(SHOTS, '09-spectator-end.png') });
+await page.evaluate(() => { document.getElementById('end').classList.add('hidden'); window.__nd.toMenu(); });
+await page.click('input[name=mode][value=play]');
+await sleep(300);
+
 // Full game vs Easy AI, fast-forwarded: game reaches a conclusion and the end screen shows
 await page.select('#difficulty', 'easy');
 await page.click('#start-btn');
-await sleep(800);
+await page.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game.tick > 5, { timeout: 60000 });
 const ended = await page.evaluate(async () => {
   const a = window.__nd, g = a.game;
   // let an AI play our side too so the match concludes

@@ -8,6 +8,7 @@ import { MenuScene, Portrait3D } from './render/portrait3d';
 import { Camera, Renderer2D, ViewState } from './render/renderer2d';
 import { drawIcon, TILE } from './render/sprites';
 import { Btn, buildCard, iconFor } from './ui/commands';
+import { atlas } from './render/atlas';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const RACE_LIST: Race[] = ['directorate', 'kyrrh', 'aethel'];
@@ -47,18 +48,45 @@ class App {
   mmPings: { x: number; y: number; t: number }[] = [];
   endShown = false;
   perf = { sim: 0, r2d: 0, fx: 0, hud: 0, mm: 0, frame: 0, fps: 60, show: false };
+  spectator = false;
+  director = true;
+  hot = { x: 64, y: 64, heat: 0, t: 0 };
+  specSpeed = 1;
+  loading = false;
   cfg = { opp: 'random', diff: 'normal' as 'easy' | 'normal' | 'hard', seed: 42 };
 
   constructor() {
     this.resize();
     addEventListener('resize', () => this.resize());
     this.buildMenu();
+    atlas.load(f => { const el = document.getElementById('asset-load'); if (el) el.textContent = f < 1 ? `Loading 3D assets… ${Math.round(f * 100)}%` : ''; }).then(() => this.buildMenu());
     this.bindInput();
     this.bindUI();
     requestAnimationFrame(t => this.frame(t));
+    this.detectGpu();
     (window as any).__nd = this; // exposed for automated browser tests
     (window as any).__ndAI = AIController;
     (window as any).__ndDEFS = DEFS;
+  }
+
+  gpuName = '';
+  lightFx = false;
+  detectGpu() {
+    try {
+      const gl = document.createElement('canvas').getContext('webgl');
+      const dbg = gl?.getExtension('WEBGL_debug_renderer_info');
+      this.gpuName = dbg ? String(gl!.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+    } catch { /* ignore */ }
+    const software = /swiftshader|llvmpipe|software|basic render/i.test(this.gpuName);
+    this.lightFx = software;
+    this.fx.quality = software ? 0.35 : 1;
+    const el = document.getElementById('gpu-note');
+    if (el) {
+      el.innerHTML = software
+        ? `⚠ Your browser is rendering without the GPU (${this.gpuName || 'software'}). Enable <b>Settings → System → Use graphics acceleration</b> in Chrome, or use the local GPU launcher, for smooth play.`
+        : this.gpuName ? `GPU: ${this.gpuName.replace(/^ANGLE \(|\)$/g, '').split(',').slice(0, 2).join(',')}` : '';
+      el.classList.toggle('warn', software);
+    }
   }
 
   resize() {
@@ -83,7 +111,7 @@ class App {
       const cv = document.createElement('canvas'); cv.width = 300; cv.height = 90;
       const c = cv.getContext('2d')!;
       const showcase = { directorate: ['trooper', 'juggernaut', 'titan', 'dreadnought'], kyrrh: ['skitterling', 'carapid', 'behemoth', 'gravemaw'], aethel: ['vindicator', 'seeker', 'hierophant', 'empyrean'] }[r];
-      showcase.forEach((u, i) => { c.save(); c.translate(i * 75, 5); drawIcon(c, u, r, 80, rd.accent); c.restore(); });
+      showcase.forEach((u, i) => { c.save(); c.translate(i * 75, 5); if (!atlas.icon(c, u, 80, 0)) drawIcon(c, u, r, 80, rd.accent); c.restore(); });
       card.appendChild(cv);
       card.insertAdjacentHTML('beforeend', `<h4>${rd.name}</h4><p>${rd.tagline}</p>`);
       card.onclick = () => { this.race = r; audio.unlock(); audio.ui('click'); this.buildMenu(); };
@@ -93,6 +121,9 @@ class App {
 
   bindUI() {
     $('start-btn').onclick = () => { audio.unlock(); audio.ui('confirm'); this.startGame(); };
+    document.querySelectorAll<HTMLInputElement>('input[name=mode]').forEach(r => r.onchange = () => { const spec = r.value === 'spectate' && r.checked; if (r.checked) { $('p1-diff-wrap').classList.toggle('hidden', !spec); $('race-title').textContent = spec ? 'Blue AI race' : 'Choose your race'; $('opp-label').firstChild!.textContent = spec ? 'Red AI race ' : 'Opponent '; $<HTMLButtonElement>('start-btn').textContent = spec ? 'Watch AI vs AI' : 'Launch Skirmish'; } });
+    document.querySelectorAll<HTMLElement>('[data-speed]').forEach(b => b.onclick = () => { this.specSpeed = +b.dataset.speed!; this.paused = this.specSpeed === 0; document.querySelectorAll('[data-speed]').forEach(o => o.classList.toggle('on', o === b)); audio.ui('click'); });
+    $('director-btn').onclick = () => { this.director = !this.director; $('director-btn').classList.toggle('on', this.director); audio.ui('click'); };
     $('howto-btn').onclick = () => { audio.unlock(); audio.ui('open'); $('howto').classList.remove('hidden'); };
     $('settings-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.openSettings(); };
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => { audio.ui('click'); $(b.dataset.close!).classList.add('hidden'); if (b.dataset.close === 'settings') this.paused = false; });
@@ -149,30 +180,44 @@ class App {
     audio.playMusic('menu');
   }
 
-  startGame() {
+  async startGame() {
+    if (this.loading) return;
+    this.spectator = (document.querySelector('input[name=mode]:checked') as HTMLInputElement | null)?.value === 'spectate';
     const opp = ($<HTMLSelectElement>('opp-race').value) as Race | 'random';
     const oppRace: Race = opp === 'random' ? RACE_LIST[Math.floor(Math.random() * 3)] : opp;
     const diff = $<HTMLSelectElement>('difficulty').value as 'easy' | 'normal' | 'hard';
     const seed = Math.max(1, Math.min(99999, +$<HTMLInputElement>('seed').value || 42));
     this.cfg = { opp, diff, seed };
-    this.game = new Game({ seed, players: [{ race: this.race, name: 'You' }, { race: oppRace, ai: diff, name: `${RACES[oppRace].name} (${diff})` }] });
+    const diff1 = $<HTMLSelectElement>('difficulty1').value as 'easy' | 'normal' | 'hard';
+    this.game = new Game({ seed, players: this.spectator
+      ? [{ race: this.race, ai: diff1, name: `Blue ${RACES[this.race].name}` }, { race: oppRace, ai: diff, name: `Red ${RACES[oppRace].name}` }]
+      : [{ race: this.race, name: 'You' }, { race: oppRace, ai: diff, name: `${RACES[oppRace].name} (${diff})` }] });
     attachAI(this.game);
     this.r2d = new Renderer2D(this.ctx, this.game);
+    this.loading = true;
+    $('loading').classList.remove('hidden');
+    await this.r2d.terrain.prebuild(f => { $('loading-bar').style.width = `${Math.round(f * 100)}%`; });
+    $('loading').classList.add('hidden');
+    this.loading = false;
     this.mmTerrain = this.r2d.terrain.minimapImage(200);
+    this.mmLayer = null;
     this.fx.clear();
     if (!this.portrait) this.portrait = new Portrait3D($<HTMLCanvasElement>('portrait'));
-    this.view = { cam: this.cam, me: this.me, selected: new Set(), hover: 0, drag: null, ghost: null, markers: [], targeting: null };
+    this.view = { cam: this.cam, me: this.me, selected: new Set(), hover: 0, drag: null, ghost: null, markers: [], targeting: null, spectator: this.spectator };
+    this.specSpeed = 1; this.hot = { x: 64, y: 64, heat: 0, t: 0 };
+    $('spec-bar').classList.toggle('hidden', !this.spectator);
+    document.querySelectorAll('[data-speed]').forEach(o => o.classList.toggle('on', (o as HTMLElement).dataset.speed === '1'));
     this.groups.clear();
     this.targeting = null; this.cardMode = 'main';
     this.endShown = false;
     this.paused = false;
     const main = this.game.unitsOf(this.me, e => !!e.def?.dropoff)[0];
-    this.centerOn(main.x, main.y + 3);
+    if (this.spectator) this.centerOn(this.game.map.w / 2, this.game.map.h / 2); else this.centerOn(main.x, main.y + 3);
     this.mode = 'game';
     $('menu').classList.add('hidden');
     $('hud').classList.remove('hidden');
-    audio.playMusic(this.race);
-    this.flash(`${RACES[this.race].name} vs ${RACES[oppRace].name}. Destroy every enemy structure.`, 'info');
+    audio.playMusic(this.spectator ? 'menu' : this.race);
+    this.flash(this.spectator ? `AI vs AI: ${RACES[this.race].name} (blue) vs ${RACES[oppRace].name} (red)` : `${RACES[this.race].name} vs ${RACES[oppRace].name}. Destroy every enemy structure.`, 'info');
   }
 
   // =============================================================== CAMERA
@@ -360,7 +405,7 @@ class App {
   }
 
   issue(cmd: any) {
-    if (!this.game) return;
+    if (!this.game || this.spectator) return;
     this.game.issue(cmd, this.me);
   }
 
@@ -370,6 +415,7 @@ class App {
   }
 
   smartAt(tx: number, ty: number, shift: boolean, targetId: number) {
+    if (this.spectator) return;
     const own = this.ownSelected();
     if (!own.length) return;
     const t = this.game!.get(targetId);
@@ -466,11 +512,14 @@ class App {
 
     const pt0 = performance.now();
     if (!this.paused && !g.over) {
-      this.acc += dt * this.speed * TICK_RATE;
+      const mult = this.spectator ? (this.specSpeed >= 99 ? 64 : this.specSpeed) : 1;
+      this.acc += dt * this.speed * TICK_RATE * mult;
       let n = 0;
-      while (this.acc >= 1 && n < 10) { g.step(); this.acc -= 1; n++; }
-      if (n >= 10) this.acc = 0;
+      const budget = this.spectator ? 14 : 8, tStart = performance.now();
+      while (this.acc >= 1 && (n < 10 || this.spectator) && performance.now() - tStart < budget) { g.step(); this.acc -= 1; n++; if (this.spectator && n % 8 === 0) this.processEvents(true); }
+      if (this.acc > 40) this.acc = 0;
     }
+    if (this.spectator) this.directorCam(dt);
     this.processEvents();
     const pt1 = performance.now();
     // selection cleanup
@@ -507,7 +556,7 @@ class App {
     if (this.hudTimer <= 0) { this.hudTimer = 0.1; this.updateHUD(); }
     const pt4 = performance.now();
     this.drawMinimap(dt);
-    this.portrait?.render(dt);
+    this.renderPortrait(dt);
     const pt5 = performance.now();
     const k = 0.1, P = this.perf;
     P.sim += (pt1 - pt0 - P.sim) * k; P.r2d += (pt2 - pt1 - P.r2d) * k; P.fx += (pt3 - pt2 - P.fx) * k;
@@ -517,13 +566,14 @@ class App {
   }
 
   // Renderer2D draws with its own transform; wrap to support devicePixelRatio.
-  processEvents() {
+  processEvents(fastForward = false) {
     const g = this.game!;
     const me = this.me;
-    const vis = (x: number, y: number) => g.pointVisible(me, x, y);
+    const vis = this.spectator ? (x: number, y: number) => this.onScreenPoint(x, y) : (x: number, y: number) => g.pointVisible(me, x, y);
     for (const ev of g.events) {
-      this.fx.handle(ev, vis);
-      this.eventAudio(ev, vis);
+      if (ev.t === 'shot' && this.spectator) { this.hot.heat++; this.hot.x += (ev.x2 - this.hot.x) * 0.02; this.hot.y += (ev.y2 - this.hot.y) * 0.02; }
+      if (!fastForward || ev.t === 'death' || ev.t === 'gameover') { this.fx.handle(ev, vis); this.eventAudio(ev, vis); }
+      if (this.spectator && ev.t !== 'gameover') continue;
       switch (ev.t) {
         case 'msg': if (ev.owner === me) { this.flash(ev.text, ev.kind); if (ev.kind === 'error') audio.ui('error'); } break;
         case 'attacked':
@@ -576,9 +626,9 @@ class App {
     const g = this.game!;
     const win = winner === this.me;
     const title = $('end-title');
-    title.textContent = win ? 'VICTORY' : 'DEFEAT';
-    title.className = win ? 'win' : 'lose';
-    audio.playMusic(win ? 'victory' : 'defeat');
+    title.textContent = this.spectator ? `${g.players[winner]?.name ?? 'Nobody'} WINS` : win ? 'VICTORY' : 'DEFEAT';
+    title.className = this.spectator || win ? 'win' : 'lose';
+    audio.playMusic(this.spectator || win ? 'victory' : 'defeat');
     const mins = Math.floor(g.time / 60), secs = Math.floor(g.time % 60);
     $('end-stats').innerHTML = `<tr><th></th>${g.players.map(p => `<th style="color:${p.color}">${p.name}</th>`).join('')}</tr>` +
       [['Race', (p: any) => RACES[p.race as Race].name], ['Crystal mined', (p: any) => p.stats.minerals], ['Flux mined', (p: any) => p.stats.gas], ['Units produced', (p: any) => p.stats.units], ['Structures built', (p: any) => p.stats.buildings], ['Enemies destroyed', (p: any) => p.stats.kills], ['Losses', (p: any) => p.stats.lost]]
@@ -587,9 +637,56 @@ class App {
     setTimeout(() => $('end').classList.remove('hidden'), 1500);
   }
 
+
+  portraitId: string | null = null;
+  portraitT = 0;
+  showPortrait(id: string | null, race: Race | null, color: string) {
+    this.portraitId = id;
+    const use2d = !!id && atlas.has(id);
+    $('portrait2d').classList.toggle('hidden', !use2d);
+    $('portrait').classList.toggle('hidden', use2d);
+    if (!use2d) this.portrait?.show(id, race, color);
+  }
+  renderPortrait(dt: number) {
+    this.portraitT += dt;
+    const id = this.portraitId;
+    if (id && atlas.has(id)) {
+      const cv = $<HTMLCanvasElement>('portrait2d');
+      const c = cv.getContext('2d')!;
+      c.clearRect(0, 0, cv.width, cv.height);
+      atlas.drawTurn(c, id, this.portraitT * 9, cv.width);
+    } else this.portrait?.render(dt);
+  }
+
+  directorCam(dt: number) {
+    const h = this.hot;
+    h.heat *= Math.pow(0.5, dt);
+    h.t += dt;
+    if (!this.director || this.panStart || this.dragStart) return;
+    const W = this.cam.w / this.cam.zoom, H = this.viewH / this.cam.zoom;
+    const tx = h.x * TILE - W / 2, ty = h.y * TILE - H / 2;
+    const k = 1 - Math.pow(0.35, dt);
+    if (h.heat > 3) { this.cam.x += (tx - this.cam.x) * k; this.cam.y += (ty - this.cam.y) * k; this.clampCam(); }
+  }
+
+  updateSpecBar() {
+    const g = this.game!;
+    const row = (i: number) => {
+      const p = g.players[i];
+      const units = g.entities.filter(e => e.alive && e.owner === i && e.type === 'unit');
+      const workers = units.filter(u => u.def!.worker).length;
+      const army = units.filter(u => !u.def!.worker).reduce((s, u) => s + u.def!.supply, 0);
+      return `<div class="sp" style="border-color:${p.color}"><b style="color:${p.color}">${p.name}</b> <span>${TIER_NAMES[g.tierOf(i)]}</span>` +
+        `<span class="m">${Math.floor(p.minerals)}</span><span class="g">${Math.floor(p.gas)}</span><span>${Math.ceil(p.supplyUsed)}/${p.supplyCap}</span>` +
+        `<span>Workers ${workers}</span><span>Army ${army}</span><span>Kills ${p.stats.kills}</span>${p.alive ? '' : '<span style="color:#ff6060">ELIMINATED</span>'}</div>`;
+    };
+    $('spec-players').innerHTML = row(0) + row(1);
+  }
+
   // =============================================================== HUD
   updateHUD() {
     const g = this.game!, p = g.players[this.me];
+    if (this.spectator) this.updateSpecBar();
     $('res-min').textContent = String(Math.floor(p.minerals));
     $('res-gas').textContent = String(Math.floor(p.gas));
     const sup = $('res-sup');
@@ -642,13 +739,13 @@ class App {
     const body = $('info-body');
     const g = this.game!;
     if (!sel.length) {
-      this.portrait?.show(null, null, '#fff');
+      this.showPortrait(null, null, '#fff');
       if (this.infoKey !== 'none') { this.infoKey = 'none'; body.innerHTML = `<div class="race">${RACES[this.race].name}</div><div style="color:#7f95ab">Select units or structures. Right-click to command.</div>`; }
       return;
     }
     if (sel.length === 1) {
       const e = sel[0], d = e.def!, p = g.players[e.owner];
-      this.portrait?.show(d.id, d.race, p?.color ?? '#fff');
+      this.showPortrait(d.id, d.race, p?.color ?? '#fff');
       const w = g.weaponOf(e);
       const armor = d.armor + (e.type === 'unit' && p ? p.armor + g.armorBonus(p.id, d.id) : 0);
       let html = `<div class="name">${d.name}</div><div class="race">${RACES[d.race].name}${d.tier ? ` · ${TIER_NAMES[d.tier]}` : ''} · ${d.attrs.filter(a => a !== 'structure').join(', ')}${e.owner !== this.me ? ' · <span style="color:#ff6060">Enemy</span>' : ''}</div>`;
@@ -694,7 +791,7 @@ class App {
       return;
     }
     const prim = sel[0];
-    this.portrait?.show(prim.def!.id, prim.def!.race, g.players[prim.owner]?.color ?? '#fff');
+    this.showPortrait(prim.def!.id, prim.def!.race, g.players[prim.owner]?.color ?? '#fff');
     const html = `<div class="name">${sel.length} selected</div><div class="multi">` + sel.slice(0, 48).map(e => {
       const f = e.hp / e.maxHp;
       return `<div class="u" data-id="${e.id}" title="${e.def!.name}"><img src="${iconFor(e.def!.id, g.players[e.owner]?.color)}"><div class="hb" style="background:${f > 0.6 ? '#3dff6e' : f > 0.3 ? '#ffd23d' : '#ff3d3d'};width:${f * 100}%"></div></div>`;
@@ -710,37 +807,43 @@ class App {
     }
   }
 
+  mmLayer: HTMLCanvasElement | null = null;
+  mmFrame = 0;
   drawMinimap(dt: number) {
     const g = this.game!;
     const cv = $<HTMLCanvasElement>('minimap');
     const c = cv.getContext('2d')!;
     const S = cv.width / g.map.w;
+    // fog + creep layer at map resolution, refreshed every 6 frames and scaled up with smoothing
+    if (!this.mmLayer) { this.mmLayer = document.createElement('canvas'); this.mmLayer.width = g.map.w; this.mmLayer.height = g.map.h; }
+    if (this.mmFrame++ % 6 === 0) {
+      const lc = this.mmLayer.getContext('2d')!;
+      const img = lc.createImageData(g.map.w, g.map.h);
+      const d = img.data, vis = g.visible[this.me], exp = g.explored[this.me];
+      for (let i = 0; i < g.map.w * g.map.h; i++) {
+        const o = i * 4;
+        if (g.creep[i]) { d[o] = 120; d[o + 1] = 40; d[o + 2] = 110; d[o + 3] = 150; }
+        if (!this.spectator && !vis[i]) { const a = exp[i] ? 115 : 215; d[o] = d[o] * 0.3; d[o + 1] = d[o + 1] * 0.3; d[o + 2] = d[o + 2] * 0.3; d[o + 3] = Math.max(d[o + 3], a); }
+      }
+      lc.putImageData(img, 0, 0);
+    }
     if (this.mmTerrain) c.drawImage(this.mmTerrain, 0, 0);
-    // creep
-    c.fillStyle = 'rgba(120,40,110,0.6)';
-    for (let y = 0; y < g.map.h; y += 2) for (let x = 0; x < g.map.w; x += 2) if (g.creep[y * g.map.w + x]) c.fillRect(x * S, y * S, S * 2, S * 2);
+    c.imageSmoothingEnabled = true;
+    c.drawImage(this.mmLayer, 0, 0, cv.width, cv.height);
     for (const e of g.entities) {
       if (!e.alive || e.hidden) continue;
       if (e.type === 'mineral' || e.type === 'geyser') {
-        if (!(e.seenMask & (1 << this.me)) && !g.explored[this.me][Math.floor(e.y) * g.map.w + Math.floor(e.x)]) continue;
+        if (!this.spectator && !(e.seenMask & (1 << this.me)) && !g.explored[this.me][Math.floor(e.y) * g.map.w + Math.floor(e.x)]) continue;
         c.fillStyle = e.type === 'mineral' ? '#58b8ff' : '#5dffa0';
         c.fillRect(e.tx * S, e.ty * S, Math.max(2, e.w * S), Math.max(2, e.h * S));
         continue;
       }
-      if (e.owner !== this.me) {
+      if (!this.spectator && e.owner !== this.me) {
         if (e.isBuilding ? !(e.seenMask & (1 << this.me)) : !g.isVisibleTo(this.me, e)) continue;
       }
       c.fillStyle = g.players[e.owner].color;
       if (e.isBuilding) c.fillRect(e.tx * S, e.ty * S, e.w * S, e.h * S);
       else c.fillRect(e.x * S - 1.5, e.y * S - 1.5, 3, 3);
-    }
-    // fog
-    const vis = g.visible[this.me], exp = g.explored[this.me];
-    for (let y = 0; y < g.map.h; y += 2) for (let x = 0; x < g.map.w; x += 2) {
-      const i = y * g.map.w + x;
-      if (vis[i]) continue;
-      c.fillStyle = exp[i] ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.85)';
-      c.fillRect(x * S, y * S, S * 2, S * 2);
     }
     for (const pg of this.mmPings) {
       pg.t += dt;
@@ -751,6 +854,7 @@ class App {
     c.strokeStyle = '#fff'; c.lineWidth = 1;
     c.strokeRect(this.cam.x / TILE * S, this.cam.y / TILE * S, this.cam.w / this.cam.zoom / TILE * S, this.viewH / this.cam.zoom / TILE * S);
   }
+
 }
 
 void THREE; void DT;
