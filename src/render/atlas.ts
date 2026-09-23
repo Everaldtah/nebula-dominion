@@ -47,7 +47,7 @@ class Atlas {
       let p = this.pending.get(id);
       if (!p) {
         p = (async () => {
-          const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), loadImg(`${BASE}sprites/${id}_turn.webp`)]);
+          const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), this.manifest![id].dirs > 1 || this.manifest![id].teams[0] !== "000000" ? loadImg(`${BASE}sprites/${id}_turn.webp`) : Promise.resolve(null)]);
           if (!img) return;
           let bmp: HTMLImageElement | ImageBitmap = img;
           try { bmp = await createImageBitmap(img); } catch { /* keep element */ }
