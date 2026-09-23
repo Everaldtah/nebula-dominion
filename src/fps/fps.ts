@@ -301,8 +301,9 @@ export class FpsGame {
     const src = this.models.get('prop_rifle');
     if (src) {
       const r = src.scene.clone(true);
-      fitObject(r, 0.9);
-      r.rotation.y = Math.PI / 2;
+      fitObject(r, 0.62);
+      r.rotation.y = -Math.PI / 2 + 0.06;   // muzzle forward (-Z), angled slightly toward the crosshair
+      r.position.y -= 0.12;
       r.traverse(o => { const mm = o as THREE.Mesh; if (mm.isMesh) tuneMat(mm.material as THREE.MeshStandardMaterial); });
       this.gun.add(r);
     } else {
@@ -313,7 +314,7 @@ export class FpsGame {
       stripe.position.set(0, 0.06, 0.05);
       this.gun.add(body, barrel, stripe);
     }
-    this.gun.position.set(0.28, -0.26, -0.55);
+    this.gun.position.set(0.3, -0.3, -0.62);
     // mech cockpit frame
     this.cockpit = new THREE.Group();
     const frameMat = new THREE.MeshStandardMaterial({ color: 0x2a3036, metalness: 0.85, roughness: 0.4 });
@@ -725,7 +726,7 @@ export class FpsGame {
     const bob = this.grounded && wish.lengthSq() > 0 ? Math.sin(this.elapsed * (this.mode === 'foot' ? 11 : 4)) * (this.mode === 'foot' ? 0.05 : 0.18) : 0;
     this.camera.position.copy(this.eye()).add(new THREE.Vector3(0, bob, 0));
     this.camera.rotation.set(this.pitch + this.kick * 0.6, this.yaw, 0);
-    if (this.gun) { this.gun.visible = this.mode === 'foot'; this.gun.position.z = -0.55 + this.kick; this.gun.position.y = -0.26 + bob * 0.3; }
+    if (this.gun) { this.gun.visible = this.mode === 'foot'; this.gun.position.z = -0.62 + this.kick; this.gun.position.y = -0.3 + bob * 0.3; }
     if (this.cockpit) this.cockpit.visible = this.mode !== 'foot';
     this.sun.position.set(this.pos.x + 80, 140, this.pos.z + 40); this.sun.target.position.copy(this.pos);
     // ---- weapons

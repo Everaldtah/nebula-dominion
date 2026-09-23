@@ -82,7 +82,7 @@ export class Cinematic {
       glow.scale.set(22, 22, 1); glow.position.set(0, 0, 16); g.add(glow); this.engineGlow.push(glow);
       this.ships.push(g); this.space.add(g);
     }
-    if (shipSrc) { const o = skClone(shipSrc); fit(o, 30, true); this.hero.add(o); }
+    if (shipSrc) { const o = skClone(shipSrc); fit(o, 30, true); const pivot = new THREE.Group(); pivot.rotation.y = Math.PI; pivot.add(o); this.hero.add(pivot); }   // nose down the flight path
     const heroGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: radial('rgba(255,210,140,1)', 'rgba(255,120,40,0)'), blending: THREE.AdditiveBlending, depthWrite: false }));
     heroGlow.scale.set(20, 20, 1); heroGlow.position.set(0, -4, 14); this.hero.add(heroGlow);
     this.ground.add(this.hero);
@@ -110,6 +110,7 @@ export class Cinematic {
     // sun
     const sun = new THREE.DirectionalLight(0xfff0dd, 3.2); sun.position.set(-1, 0.6, 0.8); s.add(sun);
     s.add(new THREE.AmbientLight(0x404a70, 0.6));
+    s.add(new THREE.HemisphereLight(0x8090c0, 0x8a4ab0, 1.1));   // violet bounce light from Vorrhaal below
     const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: radial('rgba(255,245,220,1)', 'rgba(255,200,120,0)'), blending: THREE.AdditiveBlending, depthWrite: false }));
     sunSprite.position.set(-30000, 18000, 24000); sunSprite.scale.set(9000, 9000, 1); s.add(sunSprite);
     // planet Vorrhaal + atmosphere rim
@@ -239,7 +240,7 @@ export class Cinematic {
       F.rotation.y = 0.05 * Math.sin(t * 0.05);
       if (t < 10) {
         const k = ease(span(t, 0, 10));
-        cam.position.set(1900 - k * 700, 500 - k * 150, 1600 - k * 500);
+        cam.position.set(1150 - k * 450, 330 - k * 110, 1050 - k * 350);
         cam.lookAt(F.position.x - 300 * (1 - k), -200 * (1 - k), F.position.z);
       } else if (t < 17) {
         const k = span(t, 10, 17);
