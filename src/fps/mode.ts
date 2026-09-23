@@ -2,7 +2,7 @@
 import './fps.css';
 import { audio } from '../audio/audio';
 import { q } from '../assetver';
-import { FpsGame, HudState } from './fps';
+import { FpsGame, HudState, lockPointer } from './fps';
 import { Cinematic } from './cinematic';
 import { FPS_MISSIONS, FpsMission, OPERATION, fpsProgress, fpsSave, Radio } from './story';
 
@@ -95,7 +95,7 @@ export class FpsMode {
     $('fe-menu').onclick = () => { $('fps-end').classList.add('hidden'); this.stopGame(); this.openMenu(); };
     $('fe-next').onclick = () => { $('fps-end').classList.add('hidden'); const i = FPS_MISSIONS.indexOf(this.current!); this.stopGame(); this.brief(FPS_MISSIONS[i + 1]); };
     $('cine-skip').onclick = () => this.cine?.skip();
-    $('fps-canvas').addEventListener('click', () => { if (this.game && !this.game.over && !this.game.paused) $('fps-canvas').requestPointerLock(); });
+    $('fps-canvas').addEventListener('click', () => { if (this.game && !this.game.over && !this.game.paused) lockPointer($('fps-canvas')); });
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === $('fps-canvas');
       $('fps-lock').classList.toggle('hidden', locked);
@@ -196,7 +196,7 @@ export class FpsMode {
     $('fps-hud').classList.remove('hidden');
     game.start();
     audio.playMusic('kyrrh');
-    try { canvas.requestPointerLock(); } catch { /* needs a gesture */ }
+    lockPointer(canvas);
   }
 
   stopGame() {
@@ -207,7 +207,7 @@ export class FpsMode {
   }
 
   private pause() { if (!this.game) return; this.game.paused = true; $('fps-pause').classList.remove('hidden'); }
-  private resume() { if (!this.game) return; $('fps-pause').classList.add('hidden'); this.game.paused = false; $('fps-canvas').requestPointerLock(); }
+  private resume() { if (!this.game) return; $('fps-pause').classList.add('hidden'); this.game.paused = false; lockPointer($('fps-canvas')); }
 
   private radio(r: Radio) {
     const el = $('fps-radio');

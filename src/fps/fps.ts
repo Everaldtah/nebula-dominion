@@ -453,7 +453,7 @@ export class FpsGame {
       if (document.pointerLockElement !== this.canvas || this.paused) return;
       this.yaw -= e.movementX * 0.0022; this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * 0.0022, -1.35, 1.35);
     });
-    this.on('mousedown', e => { if (e.button !== 0 || e.target !== this.canvas || this.over || this.paused) return; this.mouseDown = true; if (document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock(); });
+    this.on('mousedown', e => { if (e.button !== 0 || e.target !== this.canvas || this.over || this.paused) return; this.mouseDown = true; if (document.pointerLockElement !== this.canvas) lockPointer(this.canvas); });
     this.on('mouseup', e => { if (e.button === 0) this.mouseDown = false; });
     this.on('resize', () => this.resize());
   }
@@ -898,6 +898,10 @@ export class FpsGame {
   }
 }
 
+/** requestPointerLock returns a promise that rejects without a fresh user gesture; the HUD prompt covers that case. */
+export function lockPointer(el: HTMLElement) {
+  try { const r = el.requestPointerLock() as unknown as Promise<void> | undefined; r?.catch?.(() => { /* click to take control */ }); } catch { /* older browsers throw */ }
+}
 function mulberry(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function fitObject(o: THREE.Object3D, size: number) {
   o.updateMatrixWorld(true);
