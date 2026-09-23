@@ -1,0 +1,18 @@
+{
+  "name": "iron-descent",
+  "productName": "Nebula Dominion - Iron Descent",
+  "version": "1.0.0",
+  "description": "Operation Iron Descent: the Nebula Dominion first-person campaign as a Windows desktop app",
+  "main": "main.cjs",
+  "private": true,
+  "author": "EveraldTah",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "electron": "^38.0.0"
+  }
+}

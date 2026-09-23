@@ -75,6 +75,7 @@ class App {
     this.bindUI();
     requestAnimationFrame(t => this.frame(t));
     this.detectGpu();
+    if (new URLSearchParams(location.search).get('app') === 'fps') { audio.unlock(); this.openFps(true); }
     (window as any).__nd = this; // exposed for automated browser tests
     (window as any).__ndAI = AIController;
     (window as any).__ndDEFS = DEFS;
@@ -155,11 +156,7 @@ class App {
     $('tomenu-btn').onclick = () => { $('end').classList.add('hidden'); const wasCampaign = !!this.mission; this.toMenu(); if (wasCampaign) this.openCampaign(); };
     $('next-btn').onclick = () => { $('end').classList.add('hidden'); const i = this.mission ? MISSIONS.indexOf(this.mission) : -1; this.toMenu(); if (i >= 0 && MISSIONS[i + 1]) this.briefing(MISSIONS[i + 1]); };
     $('campaign-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.openCampaign(); };
-    $('fps-btn').onclick = () => {
-      audio.unlock(); audio.ui('open');
-      this.fps ??= new FpsMode(() => { this.mode = 'menu'; $('menu').classList.remove('hidden'); }, () => { this.mode = 'fps'; $('menu').classList.add('hidden'); });
-      this.fps.open();
-    };
+    $('fps-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.openFps(false); };
     $('gallery-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.gallery ??= new Gallery(); this.gallery.open(); };
     $('campaign-close').onclick = () => { audio.ui('click'); $('campaign').classList.add('hidden'); };
     $('brief-back').onclick = () => { audio.ui('click'); $('briefing').classList.add('hidden'); this.openCampaign(); };
@@ -183,6 +180,15 @@ class App {
     addEventListener('mousemove', ev => { if (mmDrag) { const p = mmMove(ev); if (p) this.centerOn(p.tx, p.ty); } });
     addEventListener('mouseup', () => { mmDrag = false; });
     mm.addEventListener('contextmenu', e => e.preventDefault());
+  }
+
+  /** Opens Operation Iron Descent. `standalone` (the Windows app, ?app=fps): no RTS menu, Back quits the app. */
+  openFps(standalone: boolean) {
+    this.fps ??= new FpsMode(
+      () => { if (standalone) window.close(); else { this.mode = 'menu'; $('menu').classList.remove('hidden'); } },
+      () => { this.mode = 'fps'; $('menu').classList.add('hidden'); });
+    if (standalone) $('fps-back').textContent = 'Quit to desktop';
+    this.fps.open();
   }
 
   openSettings() {

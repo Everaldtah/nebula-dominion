@@ -80,6 +80,8 @@ export class FpsMode {
 
   constructor(private exitToMenu: () => void, private hideMenu: () => void) {
     document.body.insertAdjacentHTML('beforeend', HTML);
+    // the Vorrhaal sky (Kaggle SDXL) behind the menus; the game and cinematic canvases cover it while playing
+    $('fps-root').style.background = `linear-gradient(rgba(2,4,10,.25), rgba(2,4,10,.8)), url(${BASE}env/sky.webp${q}) center / cover, #000`;
     $('fps-back').onclick = () => { audio.ui('click'); this.close(); };
     $('fps-intro-btn').onclick = () => { audio.ui('confirm'); this.playIntro(null); };
     $('fb-back').onclick = () => { audio.ui('click'); $('fps-brief').classList.add('hidden'); this.openMenu(); };

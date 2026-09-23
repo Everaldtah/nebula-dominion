@@ -76,6 +76,16 @@ A first-person campaign played only with Vanguard Directorate forces. You are Em
 - **Controls:** WASD to move, Shift to sprint, Space to jump, mouse to aim, LMB to fire. 1/2 switches between rifle and grenades, R reloads (or calls the Solar Lance in Titanfall), Q is Overdrive, E boards or exits a mech, F toggles Anchor Mode, and Esc pauses.
 - **Environment art is AI-generated on Kaggle**, like the units: SDXL ground textures, sky and planet map, plus SDXL→TRELLIS 3D props (fungus trees, bone arches, spires, egg clutches, crystals, the dropship wreck, the flagship and the dropship). See `assetgen/envconcepts/` and `assetgen/build_env.py`.
 
+### Windows desktop app
+
+`desktop/` packages Iron Descent as a standalone Windows app with Electron. It launches fullscreen on the discrete GPU straight into the campaign; F11 toggles windowed mode and *Quit to desktop* exits.
+
+```bash
+cd desktop && npm install && node build.mjs   # web build -> FPS-only assets -> IronDescent.exe
+```
+
+The build installs to `%LOCALAPPDATA%\Programs\IronDescent` and adds Desktop and Start-menu shortcuts. `node tests/e2e/desktop_app.mjs` smoke-tests the installed app.
+
 ## Modes and performance
 
 - **Play vs AI** or **Watch AI vs AI**. The spectator mode shows both economies and has an accelerator (½× to 16×, plus MAX) and a director camera that follows the biggest fight.
