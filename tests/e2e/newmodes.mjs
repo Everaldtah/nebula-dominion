@@ -19,7 +19,7 @@ check(n1 >= 8, `gallery lists Directorate units (${n1})`);
 await p.click('[data-grace="kyrrh"]'); await sleep(400);
 const items = await p.$$('.g-item');
 for (const it of items) { const t = await it.evaluate(e => e.textContent); if (t.includes('Behemoth')) { await it.click(); break; } }
-await sleep(3000);
+await p.waitForFunction(() => !/Loading/.test(document.getElementById('g-status').textContent), { timeout: 30000 }).catch(() => {});
 const st = await p.$eval('#g-status', e => e.textContent);
 check(/AI-generated/.test(st), `behemoth loads the AI-generated GLB (${st})`);
 // drag to rotate

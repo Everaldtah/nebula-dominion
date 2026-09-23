@@ -17,14 +17,25 @@ class Atlas {
   ready = false;
   private listeners: (() => void)[] = [];
 
+  private manifest: Record<string, SheetMeta> | null = null;
+  private pending = new Map<string, Promise<void>>();
+
+  /** Fetch the sprite manifest only (tiny). Sheets are loaded per match with ensure(). */
   async load(onProgress?: (f: number) => void) {
-    let manifest: Record<string, SheetMeta> = {};
     try {
       const r = await fetch(`${BASE}sprites/manifest.json`, { cache: 'no-cache' });
-      if (r.ok) manifest = await r.json();
-    } catch { /* no sprites: procedural fallback */ }
-    const ids = Object.keys(manifest);
-    this.total = ids.length * 2;
+      this.manifest = r.ok ? await r.json() : {};
+    } catch { this.manifest = {}; }
+    onProgress?.(1);
+    this.ready = true;
+    this.listeners.forEach(f => f());
+  }
+
+  /** Load (once) every sheet whose id is in `ids`; resolves when all are decoded. */
+  async ensure(ids: string[], onProgress?: (f: number) => void) {
+    if (!this.manifest) await this.load();
+    const want = ids.filter(id => this.manifest![id]);
+    let done = 0;
     const loadImg = (src: string) => new Promise<HTMLImageElement | null>(res => {
       const im = new Image();
       im.decoding = 'async';
@@ -32,17 +43,20 @@ class Atlas {
       im.onerror = () => res(null);
       im.src = src;
     });
-    await Promise.all(ids.map(async id => {
-      const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), loadImg(`${BASE}sprites/${id}_turn.webp`)]);
-      this.loaded += 2;
-      onProgress?.(this.loaded / Math.max(1, this.total));
-      if (!img) return;
-      let bmp: HTMLImageElement | ImageBitmap = img;
-      try { bmp = await createImageBitmap(img); } catch { /* keep element */ }
-      this.sheets.set(id, { meta: manifest[id], img: bmp, turn: turn ?? undefined });
+    await Promise.all(want.map(id => {
+      let p = this.pending.get(id);
+      if (!p) {
+        p = (async () => {
+          const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), loadImg(`${BASE}sprites/${id}_turn.webp`)]);
+          if (!img) return;
+          let bmp: HTMLImageElement | ImageBitmap = img;
+          try { bmp = await createImageBitmap(img); } catch { /* keep element */ }
+          this.sheets.set(id, { meta: this.manifest![id], img: bmp, turn: turn ?? undefined });
+        })();
+        this.pending.set(id, p);
+      }
+      return p.then(() => { done++; onProgress?.(done / Math.max(1, want.length)); });
     }));
-    this.ready = true;
-    this.listeners.forEach(f => f());
   }
   onReady(f: () => void) { if (this.ready) f(); else this.listeners.push(f); }
   has(id: string) { return this.sheets.has(id); }

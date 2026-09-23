@@ -214,7 +214,12 @@ class App {
     this.r2d = new Renderer2D(this.ctx, this.game);
     this.loading = true;
     $('loading').classList.remove('hidden');
-    await this.r2d.terrain.prebuild(f => { $('loading-bar').style.width = `${Math.round(f * 100)}%`; });
+    // stream in only the 3D sprite sheets this match needs (both races + resources)
+    const races = new Set(this.game.players.map(pl => pl.race));
+    const need = [...Object.values(DEFS).filter(d => races.has(d.race)).map(d => d.id), 'juggernaut_sieged', 'mineral', 'geyser'];
+    await atlas.ensure(need, f => { $('loading-bar').style.width = `${Math.round(f * 60)}%`; $('loading-text').textContent = `Loading 3D units… ${Math.round(f * 100)}%`; });
+    $('loading-text').textContent = 'Generating terrain…';
+    await this.r2d.terrain.prebuild(f => { $('loading-bar').style.width = `${60 + Math.round(f * 40)}%`; });
     $('loading').classList.add('hidden');
     this.loading = false;
     this.mmTerrain = this.r2d.terrain.minimapImage(200);
