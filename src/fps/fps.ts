@@ -13,7 +13,18 @@ import { FpsMission, Radio } from './story';
 const BASE = import.meta.env.BASE_URL;
 export const M = 3;              // metres per RTS tile
 const SPEED_K = 1.7;            // RTS tiles/s -> m/s for Kyrrh movement
-const HERO_HP = 4, HERO_RATE = 3, MECH_RATE = 2;   // hero pilots: x4 health, faster reloads
+const HERO_HP = 4, MECH_RATE = 2;   // hero pilots: x4 health, faster reloads
+
+export type Difficulty = 'easy' | 'medium' | 'hard';
+/** Kyrrh stats never change; difficulty scales how hard they hit, how many come, and how fast you recover. */
+export const DIFFICULTY: Record<Difficulty, { label: string; desc: string; dmg: number; hp: number; waves: number; hatch: number; regenDelay: number }> = {
+  easy: { label: 'Easy', desc: 'Kyrrh hit 40% softer, smaller swarms, and the Mender heals you sooner.', dmg: 0.6, hp: 1.3, waves: 0.7, hatch: 1.4, regenDelay: 3 },
+  medium: { label: 'Medium', desc: 'The intended fight: RTS-strength Kyrrh against your hero loadout.', dmg: 1, hp: 1, waves: 1, hatch: 1, regenDelay: 4 },
+  hard: { label: 'Hard', desc: 'Kyrrh hit 35% harder, bigger swarms, hives hatch faster, and healing is slow.', dmg: 1.35, hp: 0.85, waves: 1.35, hatch: 0.8, regenDelay: 6 },
+};
+// Hero loadout on foot: a fully automatic rifle (Trooper round + L3 upgrade) and high-explosive grenades.
+const RIFLE = { interval: 0.085, mag: 45, reload: 1.5, spread: 0.006, bloom: 0.022 };
+const GRENADE = { damage: 40, bonus: 20, radius: 4.5, cd: 0.75, knock: 14, stun: 0.5 };
 // The Covenant's strike team ships fully researched: Directorate Weapons L3 and Plating L3 (+3 armor),
 // Titans also carry Titanium Hulls (+2 armor). Damage bonus per level = the weapon's RTS perUpgrade.
 const UPG = 3;
@@ -57,7 +68,7 @@ const SIEGE = { damage: 40 + 4 * UPG, bonus: 30, range: 13 * M, minRange: 2 * M,
 
 interface Enemy {
   k: Kind; obj: THREE.Object3D; mixer: THREE.AnimationMixer | null; acts: Record<string, THREE.AnimationAction>;
-  hp: number; pos: THREE.Vector3; vel: THREE.Vector3; cd: number; spawnT: number; lastHit: number; alive: boolean; dying: number; cur: string; flash: number;
+  hp: number; pos: THREE.Vector3; vel: THREE.Vector3; cd: number; spawnT: number; lastHit: number; alive: boolean; dying: number; cur: string; flash: number; stun: number;
 }
 interface Shot { pos: THREE.Vector3; vel: THREE.Vector3; mesh: THREE.Mesh; dmg: number; bonus: number; splash: number; enemy: boolean; life: number; grav: number; hitsAir: boolean; color: number; kind: string }
 interface Pickup { pos: THREE.Vector3; mesh: THREE.Object3D; mode: Mode; hp: number }
@@ -112,9 +123,12 @@ export class FpsGame {
   private vel = new THREE.Vector3();
   yaw = 0; pitch = 0;
   mode: Mode = 'foot';
-  hp = VEHICLE.foot.hp; footHp = VEHICLE.foot.hp;
+  hp = 0; footHp = 0;
   weapon: 'rifle' | 'grenade' = 'rifle';
-  private ammo = 30; private reload = 0; private fireCd = 0; private overdrive = 0;
+  private ammo = RIFLE.mag; private bloom = 0; private shake = 0; private muzzle: THREE.PointLight | null = null; private muzzleFlash: THREE.Sprite | null = null;
+  private lights: THREE.PointLight[] = []; private lightNext = 0;
+  maxHp(mode: Mode) { return Math.round(VEHICLE[mode].hp * this.D.hp); }
+  private reload = 0; private fireCd = 0; private overdrive = 0;
   anchored = false; private anchorT = 0;
   private lanceCd = 0; private lanceCharge = 0; private lanceTarget: THREE.Vector3 | null = null; private lanceBeam: THREE.Mesh | null = null;
   private keys = new Set<string>();
@@ -137,8 +151,11 @@ export class FpsGame {
   private raf = 0; private last = 0;
   private handlers: [string, EventListener][] = [];
 
-  constructor(public canvas: HTMLCanvasElement, mission: FpsMission, private hooks: FpsHooks, private seed = 7) {
+  private D: typeof DIFFICULTY[Difficulty];
+  constructor(public canvas: HTMLCanvasElement, mission: FpsMission, private hooks: FpsHooks, private seed = 7, public difficulty: Difficulty = 'medium') {
     this.mission = mission;
+    this.D = DIFFICULTY[difficulty];
+    this.hp = this.footHp = this.maxHp('foot');
     this.noise = noise2(seed * 97 + mission.id.length * 13);
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(1.5, devicePixelRatio || 1));
@@ -206,6 +223,7 @@ export class FpsGame {
     this.sun.shadow.mapSize.set(2048, 2048);
     Object.assign(this.sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 400 });
     s.add(this.sun); s.add(this.sun.target);
+    for (let i = 0; i < 6; i++) { const l = new THREE.PointLight(0xffa040, 0, 10); l.userData.pooled = true; s.add(l); this.lights.push(l); }
     // terrain with two blended ground textures (splat by noise; creep around Kyrrh structures)
     const size = WORLD * 2 + 40, seg = 220;
     const geo = new THREE.PlaneGeometry(size, size, seg, seg);
@@ -344,7 +362,7 @@ export class FpsGame {
       obj = new THREE.Mesh(new THREE.SphereGeometry(k.radius, 16, 12), new THREE.MeshStandardMaterial({ color: 0x8a3a80 }));
     }
     const g = new THREE.Group(); g.add(obj); this.scene.add(g);
-    const e: Enemy = { k, obj: g, mixer, acts, hp: k.hp, pos: at.clone(), vel: new THREE.Vector3(), cd: Math.random() * k.cd, spawnT: (k.spawnEvery ?? 0) * Math.random(), lastHit: -99, alive: true, dying: 0, cur: '', flash: 0 };
+    const e: Enemy = { k, obj: g, mixer, acts, hp: k.hp, pos: at.clone(), vel: new THREE.Vector3(), cd: Math.random() * k.cd, spawnT: (k.spawnEvery ?? 0) * Math.random(), lastHit: -99, alive: true, dying: 0, cur: '', flash: 0, stun: 0 };
     e.pos.y = this.heightAt(at.x, at.z) + k.air;
     g.position.copy(e.pos);
     this.play(e, 'Idle');
@@ -384,6 +402,7 @@ export class FpsGame {
     const v = VEHICLE[this.mode];
     let total = 0;
     for (let i = 0; i < hits; i++) total += Math.max(0.5, dmg + (v.armored ? bonus : 0) - v.armor);
+    total *= this.D.dmg;
     this.hp -= total; this.lastHurt = this.elapsed;
     this.dmgLog[src] = (this.dmgLog[src] ?? 0) + total;
     this.hurt = Math.min(1, this.hurt + total / 40);
@@ -397,7 +416,7 @@ export class FpsGame {
   }
 
   // ================================================================ effects + projectiles
-  private burst(at: THREE.Vector3, color: number, n: number, size: number) {
+  private burst(at: THREE.Vector3, color: number, n: number, size: number, light = true) {
     const g = new THREE.BufferGeometry();
     const pos = new Float32Array(n * 3), vel: THREE.Vector3[] = [];
     for (let i = 0; i < n; i++) { pos.set([at.x, at.y, at.z], i * 3); vel.push(new THREE.Vector3((Math.random() - 0.5) * size, Math.random() * size * 0.8, (Math.random() - 0.5) * size)); }
@@ -406,8 +425,12 @@ export class FpsGame {
     pts.userData.vel = vel;
     this.scene.add(pts);
     this.fx.push({ mesh: pts, t: 0, life: 0.9, grow: 0, fade: true });
-    const flash = new THREE.PointLight(color, 40, size * 3); flash.position.copy(at); this.scene.add(flash);
-    this.fx.push({ mesh: flash, t: 0, life: 0.2, grow: 0, fade: true });
+    if (!light) return;
+    // pooled lights: adding/removing lights makes three.js recompile every material (a visible hitch)
+    const fl = this.lights[this.lightNext++ % this.lights.length];
+    if (!fl) return;
+    fl.color.setHex(color); fl.distance = size * 3; fl.position.copy(at); fl.intensity = 40;
+    this.fx.push({ mesh: fl, t: 0, life: 0.2, grow: 0, fade: true });
   }
   private shoot(from: THREE.Vector3, dir: THREE.Vector3, speed: number, o: Partial<Shot> & { dmg: number; enemy: boolean }) {
     const color = o.color ?? (o.enemy ? 0x9dff5a : 0xffd27a);
@@ -422,14 +445,43 @@ export class FpsGame {
     this.scene.add(l);
     this.fx.push({ mesh: l, t: 0, life: 0.06, grow: 0, fade: true });
   }
-  private splashAt(p: THREE.Vector3, radius: number, dmg: number, bonus: number, byEnemy: boolean) {
-    this.burst(p, byEnemy ? 0x9dff5a : 0xffa040, 30, radius * 1.4);
+  private splashAt(p: THREE.Vector3, radius: number, dmg: number, bonus: number, byEnemy: boolean, heavy = false) {
+    this.burst(p, byEnemy ? 0x9dff5a : 0xffa040, heavy ? 70 : 30, radius * (heavy ? 2 : 1.4));
     if (byEnemy) { if (p.distanceTo(this.eye()) < radius + VEHICLE[this.mode].radius + 1) this.hurtPlayer(dmg, bonus, 1, 'splash'); return; }
+    if (heavy) {
+      // fireball + shockwave ring + screen shake, and a proper boom
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffc070, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+      ball.position.copy(p); this.scene.add(ball);
+      this.fx.push({ mesh: ball, t: 0, life: 0.35, grow: radius * 0.9, fade: true });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.8, 1, 40), new THREE.MeshBasicMaterial({ color: 0xffe0a0, transparent: true, opacity: 0.8, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+      ring.rotation.x = -Math.PI / 2; ring.position.set(p.x, this.heightAt(p.x, p.z) + 0.3, p.z); this.scene.add(ring);
+      this.fx.push({ mesh: ring, t: 0, life: 0.45, grow: radius * 1.6, fade: true });
+      this.shake = Math.max(this.shake, 0.35 * Math.max(0, 1 - p.distanceTo(this.pos) / 35));
+      audio.weapon('artillery', 'directorate', 'grenade', p.x / M, p.z / M);
+    }
     for (const e of this.enemies) {
       if (!e.alive) continue;
-      const d = e.pos.distanceTo(p) - e.k.radius;
-      if (d < radius) this.hurtEnemy(e, d < radius / 2 ? dmg : dmg / 2, bonus);
+      const d = Math.max(0, e.pos.distanceTo(p) - e.k.radius);
+      if (d >= radius) continue;
+      // full damage in the inner 60%, falling to half at the edge
+      const f = d < radius * 0.6 ? 1 : 1 - 0.5 * (d - radius * 0.6) / (radius * 0.4);
+      this.hurtEnemy(e, dmg * f, bonus * f);
+      if (heavy && !e.k.structure && !e.k.massive) {
+        const push = new THREE.Vector3(e.pos.x - p.x, 0, e.pos.z - p.z);
+        if (push.lengthSq() < 0.01) push.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+        e.vel.add(push.normalize().multiplyScalar(GRENADE.knock * (1 - d / radius)));
+        e.stun = Math.max(e.stun, GRENADE.stun);
+      }
     }
+  }
+  private flashMuzzle() {
+    if (!this.muzzle) {
+      this.muzzle = new THREE.PointLight(0xffc36a, 0, 9); this.muzzle.position.set(0.28, -0.2, -1.0); this.camera.add(this.muzzle);
+      this.muzzleFlash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex(), color: 0xffd08a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false }));
+      this.muzzleFlash.position.set(0.28, -0.22, -1.02); this.muzzleFlash.renderOrder = 10; this.camera.add(this.muzzleFlash);
+    }
+    this.muzzle.intensity = 6;
+    this.muzzleFlash!.visible = true; this.muzzleFlash!.scale.setScalar(0.18 + Math.random() * 0.1); this.muzzleFlash!.material.rotation = Math.random() * 6.28;
   }
 
   // ================================================================ input
@@ -446,7 +498,7 @@ export class FpsGame {
       if (e.code === 'KeyQ') this.useOverdrive();
       if (e.code === 'KeyE') this.interact();
       if (e.code === 'KeyF') this.toggleAnchor();
-      if (e.code === 'KeyR') { if (this.mission.lance) this.callLance(); else if (this.mode === 'foot') this.reload = 1.6; }
+      if (e.code === 'KeyR') { if (this.mission.lance) this.callLance(); else if (this.mode === 'foot' && this.ammo < RIFLE.mag && this.reload <= 0) this.reload = RIFLE.reload; }
     });
     this.on('keyup', e => this.keys.delete(e.code));
     this.on('mousemove', e => {
@@ -498,7 +550,7 @@ export class FpsGame {
     at.y = this.heightAt(at.x, at.z);
     g.position.copy(at);
     this.scene.add(g);
-    this.pickups.push({ pos: at.clone(), mesh: g, mode, hp: hp ?? VEHICLE[mode].hp });
+    this.pickups.push({ pos: at.clone(), mesh: g, mode, hp: hp ?? this.maxHp(mode) });
   }
   callLance() {
     // Dreadnought Solar Lance: 2s channel, then 240 damage. Cooldown 71s (RTS values).
@@ -516,8 +568,8 @@ export class FpsGame {
   // ================================================================ aiming
   eye() { return new THREE.Vector3(this.pos.x, this.pos.y + VEHICLE[this.mode].eye, this.pos.z); }
   private aimDir() { return new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ')); }
-  private aimPoint(): { point: THREE.Vector3; enemy: Enemy | null } {
-    const o = this.eye(), d = this.aimDir();
+  private aimPoint(dir?: THREE.Vector3): { point: THREE.Vector3; enemy: Enemy | null } {
+    const o = this.eye(), d = dir ?? this.aimDir();
     let best: Enemy | null = null, bt = 400;
     for (const e of this.enemies) {
       if (!e.alive) continue;
@@ -534,30 +586,44 @@ export class FpsGame {
 
   private fire(dt: number) {
     this.fireCd -= dt;
-    if (!this.mouseDown || this.fireCd > 0 || (document.pointerLockElement !== this.canvas && !this.testAuto)) return;
+    if (!this.mouseDown || (document.pointerLockElement !== this.canvas && !this.testAuto)) { this.fireCd = Math.max(0, this.fireCd); return; }
+    // cooldowns accumulate, so the rate of fire doesn't depend on the framerate (up to 4 shots in a slow frame)
+    for (let n = 0; n < 4 && this.fireCd <= 0; n++) {
+      const before = this.fireCd;
+      this.fireOnce();
+      if (this.fireCd === before) break;   // couldn't fire (reloading, transforming...)
+    }
+  }
+  private fireOnce() {
     const o = this.eye(), d = this.aimDir();
     const muzzle = o.clone().add(d.clone().multiplyScalar(1.2)).add(new THREE.Vector3(0, -0.2, 0));
     if (this.mode === 'foot') {
       if (this.weapon === 'rifle') {
         if (this.reload > 0) return;
-        if (this.ammo <= 0) { this.reload = 1.6; return; }
+        if (this.ammo <= 0) { this.reload = RIFLE.reload; return; }
         this.ammo--;
+        if (this.ammo === 0) this.reload = RIFLE.reload;   // auto-reload on an empty magazine
         const w = DEFS.trooper.weapon!;
-        this.fireCd = w.cooldown / HERO_RATE / (this.overdrive > 0 ? 1.5 : 1);
-        const aim = this.aimPoint();
-        this.tracer(muzzle, aim.point);
+        // fully automatic: ~12 rounds/s while the trigger is held; accuracy blooms during long bursts
+        this.fireCd += RIFLE.interval / (this.overdrive > 0 ? 1.5 : 1);
+        const cone = RIFLE.spread + this.bloom;
+        const dir = d.clone().add(new THREE.Vector3((Math.random() - 0.5) * cone, (Math.random() - 0.5) * cone, (Math.random() - 0.5) * cone)).normalize();
+        this.bloom = Math.min(RIFLE.bloom, this.bloom + 0.0025);
+        const aim = this.aimPoint(dir);
+        this.tracer(this.camera.localToWorld(new THREE.Vector3(0.28, -0.22, -1.0)), aim.point);
         if (aim.enemy) this.hurtEnemy(aim.enemy, w.damage + up('trooper'), 0, 1);
-        else this.burst(aim.point, 0xffd27a, 4, 1.5);
+        else this.burst(aim.point, 0xffd27a, 4, 1.5, false);
         audio.weapon('bullet', 'directorate', 'trooper', undefined as any, undefined as any);
-        this.kick = 0.05;
+        this.kick = Math.min(0.06, this.kick + 0.018);
+        this.pitch = Math.min(1.35, this.pitch + 0.0012);   // gentle muzzle climb
+        this.flashMuzzle();
       } else {
-        const w = DEFS.breacher.weapon!;
-        this.fireCd = w.cooldown / (this.overdrive > 0 ? 1.5 : 1);
+        this.fireCd += GRENADE.cd / (this.overdrive > 0 ? 1.5 : 1);
         // the launcher's sight solves the arc: the grenade lands on whatever is under the crosshair (max 60 m)
         const aim = this.aimPoint();
         const to = aim.point.clone().sub(muzzle);
         if (to.length() > 60) to.setLength(60);
-        this.lob(muzzle, muzzle.clone().add(to), Math.max(0.15, to.length() / 32), { dmg: w.damage + up('breacher'), bonus: w.bonus?.amount ?? 0, splash: 2.2, enemy: false, color: 0xffb347, kind: 'grenade' });
+        this.lob(muzzle, muzzle.clone().add(to), Math.max(0.15, to.length() / 32), { dmg: GRENADE.damage, bonus: GRENADE.bonus, splash: GRENADE.radius, enemy: false, color: 0xffb347, kind: 'grenade' });
         audio.weapon('shell', 'directorate', 'breacher', undefined as any, undefined as any);
         this.kick = 0.12;
       }
@@ -566,22 +632,22 @@ export class FpsGame {
       if (this.anchored) {
         const aim = this.aimPoint();
         const dist = aim.point.distanceTo(this.pos);
-        if (dist < SIEGE.minRange) { this.message('Target inside minimum range', 'warn'); this.fireCd = 0.4; return; }
+        if (dist < SIEGE.minRange) { this.message('Target inside minimum range', 'warn'); this.fireCd += 0.4; return; }
         const tgt = dist > SIEGE.range ? this.pos.clone().add(aim.point.clone().sub(this.pos).setLength(SIEGE.range)) : aim.point;
-        this.fireCd = SIEGE.cd;
+        this.fireCd += SIEGE.cd;
         this.lob(muzzle, tgt, 1.1, { dmg: SIEGE.damage, bonus: SIEGE.bonus, splash: SIEGE.splash, enemy: false, color: 0xffe07a, kind: 'artillery' });
         audio.weapon('artillery', 'directorate', 'juggernaut', undefined as any, undefined as any);
         this.kick = 0.25;
       } else {
         const w = DEFS.juggernaut.weapon!;
-        this.fireCd = w.cooldown / MECH_RATE;
+        this.fireCd += w.cooldown / MECH_RATE;
         this.shoot(muzzle, this.aimPoint().point.sub(muzzle).normalize(), 70, { dmg: w.damage + up('juggernaut'), bonus: w.bonus?.amount ?? 0, splash: 2, enemy: false, color: 0xffcf6a, hitsAir: false, kind: 'shell' });
         audio.weapon('shell', 'directorate', 'juggernaut', undefined as any, undefined as any);
         this.kick = 0.15;
       }
     } else {
       const w = DEFS.titan.weapon!;
-      this.fireCd = w.cooldown / 1.5;   // hero pilot, a little under the Juggernaut's boost: the Titan already hits hardest
+      this.fireCd += w.cooldown / 1.5;   // hero pilot, a little under the Juggernaut's boost: the Titan already hits hardest
       const target = this.aimPoint().point;
       for (const side of [-1, 1]) {
         // the twin cannons converge on whatever is under the crosshair
@@ -614,11 +680,12 @@ export class FpsGame {
       if (this.elapsed < this.waveNext[i] || (w.until && this.elapsed > w.until)) return;
       this.waveNext[i] += w.every;
       const alive = this.enemies.filter(e => e.alive && !e.k.structure).length;
-      if (w.max && alive >= w.max) return;
+      const cap = Math.round((w.max ?? 30) * this.D.waves);
+      if (alive >= cap) return;
       const scale = Math.min(2.5, 1 + (w.grow ?? 0) * this.waveN[i]++);   // waves grow, but never past 2.5x
       const a = Math.random() * Math.PI * 2, d = 70 + Math.random() * 40;
-      let room = (w.max ?? 30) - alive;
-      for (const [id, n] of w.kinds) for (let j = 0; j < Math.round(n * scale) && room-- > 0; j++) {
+      let room = cap - alive;
+      for (const [id, n] of w.kinds) for (let j = 0; j < Math.max(1, Math.round(n * scale * this.D.waves)) && room-- > 0; j++) {
         const x = THREE.MathUtils.clamp(this.pos.x + Math.cos(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
         const z = THREE.MathUtils.clamp(this.pos.z + Math.sin(a) * d + (Math.random() - 0.5) * 16, -WORLD + 20, WORLD - 20);
         this.spawn(id, new THREE.Vector3(x, 0, z));
@@ -680,7 +747,7 @@ export class FpsGame {
     const v = VEHICLE[this.mode];
     // ---- timers
     if (this.overdrive > 0) this.overdrive -= dt;
-    if (this.reload > 0) { this.reload -= dt; if (this.reload <= 0) this.ammo = 30; }
+    if (this.reload > 0) { this.reload -= dt; if (this.reload <= 0) this.ammo = RIFLE.mag; }
     if (this.lanceCd > 0) this.lanceCd -= dt;
     if (this.anchorT > 0) { this.anchorT -= dt; if (this.anchorT <= 0) { this.anchored = !this.anchored; this.message(this.anchored ? 'ANCHOR MODE: range 39 m, splash' : 'MOBILE MODE'); } }
     if (this.lanceCharge > 0) {
@@ -698,10 +765,14 @@ export class FpsGame {
       }
     }
     // support drone: a Mender heals the trooper (RTS rate 12.6/s), a Rigger repairs mechs; both need 4s out of the fight
-    if (this.elapsed - this.lastHurt > 4 && this.hp > 0 && this.hp < v.hp) this.hp = Math.min(v.hp, this.hp + 12.6 * dt);
+    const maxHp = this.maxHp(this.mode);
+    if (this.elapsed - this.lastHurt > this.D.regenDelay && this.hp > 0 && this.hp < maxHp) this.hp = Math.min(maxHp, this.hp + 12.6 * dt);
     this.hurt = Math.max(0, this.hurt - dt * 0.8);
     this.hitmark = Math.max(0, this.hitmark - dt);
     this.kick = Math.max(0, this.kick - dt * 1.5);
+    if (!this.mouseDown) this.bloom = Math.max(0, this.bloom - dt * 0.08);
+    this.shake = Math.max(0, this.shake - dt * 1.2);
+    if (this.muzzle) { this.muzzle.intensity = Math.max(0, this.muzzle.intensity - dt * 120); this.muzzleFlash!.visible = this.muzzle.intensity > 2.5; }
     // ---- movement
     const speed = (this.anchored || this.anchorT > 0) ? 0 : v.speed * (this.keys.has('ShiftLeft') && this.mode === 'foot' ? 1.45 : 1) * (this.overdrive > 0 ? 1.5 : 1);
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)), right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
@@ -725,7 +796,7 @@ export class FpsGame {
     // ---- camera
     const bob = this.grounded && wish.lengthSq() > 0 ? Math.sin(this.elapsed * (this.mode === 'foot' ? 11 : 4)) * (this.mode === 'foot' ? 0.05 : 0.18) : 0;
     this.camera.position.copy(this.eye()).add(new THREE.Vector3(0, bob, 0));
-    this.camera.rotation.set(this.pitch + this.kick * 0.6, this.yaw, 0);
+    this.camera.rotation.set(this.pitch + this.kick * 0.6 + (Math.random() - 0.5) * this.shake * 0.08, this.yaw + (Math.random() - 0.5) * this.shake * 0.08, 0);
     if (this.gun) { this.gun.visible = this.mode === 'foot'; this.gun.position.z = -0.62 + this.kick; this.gun.position.y = -0.3 + bob * 0.3; }
     if (this.cockpit) this.cockpit.visible = this.mode !== 'foot';
     this.sun.position.set(this.pos.x + 80, 140, this.pos.z + 40); this.sun.target.position.copy(this.pos);
@@ -748,8 +819,9 @@ export class FpsGame {
       const mat = (f.mesh as THREE.Mesh).material as THREE.Material & { opacity?: number };
       if (mat && f.fade && 'opacity' in mat) mat.opacity = Math.max(0, 1 - k);
       const light = f.mesh as THREE.PointLight;
-      if (light.isPointLight) light.intensity = 40 * (1 - k);
-      if (k >= 1) { this.scene.remove(f.mesh); this.fx.splice(i, 1); }
+      if (light.isPointLight) light.intensity = 40 * Math.max(0, 1 - k);
+      if (f.grow) f.mesh.scale.setScalar(1 + f.grow * Math.min(1, k * 1.6));
+      if (k >= 1) { if (!f.mesh.userData.pooled) this.scene.remove(f.mesh); this.fx.splice(i, 1); }
     }
     // ---- audio listener follows the player (RTS audio engine uses tile coordinates)
     audio.listener = { x: this.pos.x / M - 20, y: this.pos.z / M - 12, w: 40, h: 25 };
@@ -787,7 +859,7 @@ export class FpsGame {
         e.spawnT -= dt;
         const crowd = this.enemies.filter(x => x.alive && !x.k.structure).length;
         if (e.spawnT <= 0 && e.pos.distanceTo(me) < 90 && crowd < 16) {
-          e.spawnT = k.spawnEvery;
+          e.spawnT = k.spawnEvery * this.D.hatch;
           const hatch = (hive: Enemy, kinds: string[]) => kinds.forEach((s, j) => this.spawn(s, hive.pos.clone().add(new THREE.Vector3(Math.cos(j * 2.1 + this.elapsed) * (hive.k.radius + 3), 0, Math.sin(j * 2.1 + this.elapsed) * (hive.k.radius + 3)))));
           if (k.id === 'matron') {
             const hive = this.enemies.filter(x => x.alive && (x.k.id === 'nest' || x.k.id === 'throne')).sort((a, b) => a.pos.distanceTo(e.pos) - b.pos.distanceTo(e.pos))[0];
@@ -827,7 +899,8 @@ export class FpsGame {
       if (e.flash > 0) e.obj.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) ((m.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.5); });
       else if (e.flash > -0.2) e.obj.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) ((m.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.55); });
       // attack
-      if (inRange && e.cd <= 0 && !this.over) {
+      if (e.stun > 0) e.stun -= dt;
+      if (inRange && e.cd <= 0 && e.stun <= 0 && !this.over) {
         e.cd = k.cd;
         this.play(e, 'Attack');
         const from = e.pos.clone().add(new THREE.Vector3(0, k.air ? 0 : Math.min(3, k.radius), 0));
@@ -869,7 +942,7 @@ export class FpsGame {
       const ground = this.heightAt(s.pos.x, s.pos.z);
       if (s.pos.y <= ground) hit = true;
       if (hit || s.life <= 0) {
-        if (s.splash) this.splashAt(s.pos, s.splash, s.dmg, s.bonus, s.enemy);
+        if (s.splash) this.splashAt(s.pos, s.splash, s.dmg, s.bonus, s.enemy, s.kind === 'grenade');
         else this.burst(s.pos, s.color, 5, 1.5);
         this.scene.remove(s.mesh); s.mesh.geometry.dispose();
         this.shots.splice(i, 1);
@@ -882,11 +955,11 @@ export class FpsGame {
   private emitHud() {
     const v = VEHICLE[this.mode];
     const bossE = this.enemies.filter(e => e.alive && (e.k.structure && e.k.id !== 'thorn' || e.k.massive) && e.pos.distanceTo(this.pos) < 90).sort((a, b) => a.pos.distanceTo(this.pos) - b.pos.distanceTo(this.pos))[0];
-    const aim = this.mode === 'foot' ? (this.weapon === 'rifle' ? (this.reload > 0 ? 'RELOADING' : `${this.ammo} / 30`) : 'GRENADE') : this.mode === 'juggernaut' ? (this.anchored ? 'SIEGE CANNON' : 'CANNON') : 'TWIN CANNONS';
+    const aim = this.mode === 'foot' ? (this.weapon === 'rifle' ? (this.reload > 0 ? 'RELOADING' : `${this.ammo} / ${RIFLE.mag}`) : 'GRENADE') : this.mode === 'juggernaut' ? (this.anchored ? 'SIEGE CANNON' : 'CANNON') : 'TWIN CANNONS';
     const pk = this.mode === 'foot' ? this.pickups.find(p => p.pos.distanceTo(this.pos) < 6) : null;
     this.hooks.hud({
-      hp: Math.max(0, this.hp), maxHp: v.hp, mode: this.mode,
-      weapon: this.mode === 'foot' ? (this.weapon === 'rifle' ? 'Trooper Rifle' : 'Breacher Launcher') : this.mode === 'juggernaut' ? 'Juggernaut' : 'Titan',
+      hp: Math.max(0, this.hp), maxHp: this.maxHp(this.mode), mode: this.mode,
+      weapon: this.mode === 'foot' ? (this.weapon === 'rifle' ? 'Assault Rifle · Auto' : 'HE Grenade Launcher') : this.mode === 'juggernaut' ? 'Juggernaut' : 'Titan',
       ammo: aim, overdrive: this.overdrive, anchor: this.mode === 'juggernaut' ? (this.anchorT > 0 ? 'TRANSFORMING' : this.anchored ? 'ANCHORED' : 'MOBILE') : '',
       lance: this.lanceCd, lanceReady: !!this.mission.lance && this.lanceCd <= 0 && this.lanceCharge <= 0,
       boss: bossE ? { name: DEFS[bossE.k.id].name, frac: bossE.hp / bossE.k.hp } : null,
@@ -901,6 +974,18 @@ export class FpsGame {
 /** requestPointerLock returns a promise that rejects without a fresh user gesture; the HUD prompt covers that case. */
 export function lockPointer(el: HTMLElement) {
   try { const r = el.requestPointerLock() as unknown as Promise<void> | undefined; r?.catch?.(() => { /* click to take control */ }); } catch { /* older browsers throw */ }
+}
+let _flash: THREE.Texture | null = null;
+function flashTex() {
+  if (_flash) return _flash;
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,230,1)'); gr.addColorStop(0.3, 'rgba(255,200,90,0.8)'); gr.addColorStop(1, 'rgba(255,120,20,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  g.strokeStyle = 'rgba(255,230,160,0.9)'; g.lineWidth = 3;
+  for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3; g.beginPath(); g.moveTo(32, 32); g.lineTo(32 + Math.cos(a) * 30, 32 + Math.sin(a) * 30); g.stroke(); }
+  return (_flash = new THREE.CanvasTexture(c));
 }
 function mulberry(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 function fitObject(o: THREE.Object3D, size: number) {

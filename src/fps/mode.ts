@@ -2,7 +2,7 @@
 import './fps.css';
 import { audio } from '../audio/audio';
 import { q } from '../assetver';
-import { FpsGame, HudState, lockPointer } from './fps';
+import { DIFFICULTY, Difficulty, FpsGame, HudState, lockPointer } from './fps';
 import { Cinematic } from './cinematic';
 import { FPS_MISSIONS, FpsMission, OPERATION, fpsProgress, fpsSave, Radio } from './story';
 
@@ -46,6 +46,9 @@ const HTML = `
     <div class="panel wide">
       <h2>${OPERATION.title}</h2>
       <p class="c-intro">${OPERATION.tagline} A first-person campaign: you are Ember-One, a Vanguard Directorate trooper dropped onto Vorrhaal, homeworld of the Kyrrh Swarm.</p>
+      <div class="fps-diff"><span>Difficulty</span>
+        <button data-diff="easy">Easy</button><button data-diff="medium">Medium</button><button data-diff="hard">Hard</button>
+        <em id="fps-diff-desc"></em></div>
       <div id="fps-missions"></div>
       <div class="row buttons"><button id="fps-intro-btn">▶ Watch intro cinematic</button><button id="fps-back">Back</button></div>
     </div>
@@ -55,8 +58,8 @@ const HTML = `
     <div class="panel wide brief">
       <div class="brief-head"><h2 id="fb-title"></h2><span id="fb-sub"></span></div>
       <div class="brief-body"><img id="fb-portrait" alt=""><div class="brief-talk"><b>Commander Ilse Varga</b><p id="fb-text"></p>
-        <h4>Objectives</h4><ul id="fb-obj"></ul>
-        <h4>Controls</h4><p class="fps-keys"><b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> jump · <b>Mouse</b> aim · <b>LMB</b> fire · <b>1/2</b> rifle / grenades · <b>R</b> reload · <b>Q</b> Overdrive · <b>E</b> board / exit mech · <b>F</b> Anchor Mode (Juggernaut) · <b>R</b> Solar Lance (when available) · <b>Esc</b> pause</p></div></div>
+        <h4>Objectives</h4><ul id="fb-obj"></ul><p id="fb-diff" class="fps-keys"></p>
+        <h4>Controls</h4><p class="fps-keys"><b>WASD</b> move · <b>Shift</b> sprint · <b>Space</b> jump · <b>Mouse</b> aim · <b>LMB (hold)</b> automatic fire · <b>1/2</b> assault rifle / HE grenades · <b>R</b> reload · <b>Q</b> Overdrive · <b>E</b> board / exit mech · <b>F</b> Anchor Mode (Juggernaut) · <b>R</b> Solar Lance (when available) · <b>Esc</b> pause</p></div></div>
       <div class="row buttons"><button id="fb-go" class="big">Deploy ▸</button><button id="fb-back">Back</button></div>
     </div>
   </div>
@@ -77,6 +80,7 @@ export class FpsMode {
   private current: FpsMission | null = null;
   private msgTimer = 0; private radioTimer = 0;
   private lastHud = 0;
+  private difficulty: Difficulty = loadDifficulty();
 
   constructor(private exitToMenu: () => void, private hideMenu: () => void) {
     document.body.insertAdjacentHTML('beforeend', HTML);
@@ -97,6 +101,8 @@ export class FpsMode {
     $('fe-menu').onclick = () => { $('fps-end').classList.add('hidden'); this.stopGame(); this.openMenu(); };
     $('fe-next').onclick = () => { $('fps-end').classList.add('hidden'); const i = FPS_MISSIONS.indexOf(this.current!); this.stopGame(); this.brief(FPS_MISSIONS[i + 1]); };
     $('cine-skip').onclick = () => this.cine?.skip();
+    document.querySelectorAll<HTMLButtonElement>('.fps-diff button').forEach(b => b.onclick = () => { audio.ui('click'); this.setDifficulty(b.dataset.diff as Difficulty); });
+    this.setDifficulty(this.difficulty);
     $('fps-canvas').addEventListener('click', () => { if (this.game && !this.game.over && !this.game.paused) lockPointer($('fps-canvas')); });
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === $('fps-canvas');
@@ -110,6 +116,13 @@ export class FpsMode {
     });
   }
   private wasLocked = false;
+
+  private setDifficulty(d: Difficulty) {
+    this.difficulty = d;
+    try { localStorage.setItem(DIFF_KEY, d); } catch { /* private mode */ }
+    document.querySelectorAll<HTMLButtonElement>('.fps-diff button').forEach(b => b.classList.toggle('on', b.dataset.diff === d));
+    $('fps-diff-desc').textContent = DIFFICULTY[d].desc;
+  }
 
   open() { this.hideMenu(); $('fps-root').classList.remove('hidden'); this.openMenu(); }
   close() { $('fps-menu').classList.add('hidden'); $('fps-root').classList.add('hidden'); this.exitToMenu(); }
@@ -137,6 +150,7 @@ export class FpsMode {
     $('fb-text').textContent = m.briefing;
     $<HTMLImageElement>('fb-portrait').src = `${BASE}portraits/trooper.webp${q}`;
     $('fb-obj').innerHTML = m.objectives.map(o => `<li>${o.label}</li>`).join('');
+    $('fb-diff').innerHTML = `Difficulty: <b>${DIFFICULTY[this.difficulty].label}</b> (change it on the operation menu)`;
     $('fps-brief').classList.remove('hidden');
   }
 
@@ -189,7 +203,7 @@ export class FpsMode {
       hud: h => this.hud(h),
       message: (t, k) => this.message(t, k),
       end: (win, text) => this.end(win, text),
-    }, 7 + FPS_MISSIONS.indexOf(m) * 11);
+    }, 7 + FPS_MISSIONS.indexOf(m) * 11, this.difficulty);
     this.game = game;
     (window as any).__fps = game;
     await game.preload(f => this.loadingBar(f));
@@ -279,10 +293,16 @@ export class FpsMode {
       $('fe-title').className = win ? 'win' : 'lose';
       $('fe-text').textContent = text;
       const kills = [...g.kills.entries()].map(([k, n]) => `<tr><td>${k[0].toUpperCase() + k.slice(1)}</td><td>${n}</td></tr>`).join('');
-      $('fe-stats').innerHTML = `<tr><td>Time</td><td>${Math.floor(g.elapsed / 60)}:${String(Math.floor(g.elapsed % 60)).padStart(2, '0')}</td></tr>${kills}`;
+      $('fe-stats').innerHTML = `<tr><td>Difficulty</td><td>${DIFFICULTY[g.difficulty].label}</td></tr><tr><td>Time</td><td>${Math.floor(g.elapsed / 60)}:${String(Math.floor(g.elapsed % 60)).padStart(2, '0')}</td></tr>${kills}`;
       const i = FPS_MISSIONS.indexOf(m);
       $('fe-next').classList.toggle('hidden', !win || !FPS_MISSIONS[i + 1]);
       $('fps-end').classList.remove('hidden');
     }, win ? 1200 : 1800);
   }
+}
+
+const DIFF_KEY = 'nd-fps-difficulty';
+function loadDifficulty(): Difficulty {
+  try { const d = localStorage.getItem(DIFF_KEY); if (d === 'easy' || d === 'medium' || d === 'hard') return d; } catch { /* ignore */ }
+  return 'medium';
 }

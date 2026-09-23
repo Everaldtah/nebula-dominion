@@ -84,3 +84,10 @@ button.fps-btn { border-color: #ffb347; box-shadow: 0 0 12px rgba(255, 179, 71, 
 #fe-text { font-size: 19px; max-width: 560px; line-height: 1.45; }
 #fps-root .screen.overlay { z-index: 45; }
 #fps-root .screen.overlay.hidden { display: none; }
+.fps-diff { display: flex; align-items: center; gap: 8px; margin: 2px 0 14px; flex-wrap: wrap; }
+.fps-diff span { font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 0.1em; color: var(--dim); margin-right: 4px; }
+.fps-diff button { padding: 6px 18px; font-size: 15px; }
+.fps-diff button.on { border-color: #ffb347; color: #ffcf6a; box-shadow: 0 0 12px rgba(255, 179, 71, 0.4); }
+.fps-diff button[data-diff="easy"].on { border-color: #5dffa0; color: #7dffa0; box-shadow: 0 0 12px rgba(93, 255, 160, 0.35); }
+.fps-diff button[data-diff="hard"].on { border-color: #ff5a5a; color: #ff8a7a; box-shadow: 0 0 12px rgba(255, 90, 90, 0.4); }
+.fps-diff em { flex-basis: 100%; font-style: normal; font-size: 14px; color: var(--dim); }

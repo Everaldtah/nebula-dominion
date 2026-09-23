@@ -19,7 +19,12 @@ await p.click('#fps-btn'); await sleep(500);
 check(await p.$('#fps-menu:not(.hidden)') !== null, 'FPS operation menu opens');
 check(await p.$$eval('.fps-card', e => e.length) === 3, 'three missions listed');
 check(await p.$$eval('.fps-card.locked', e => e.length) === 2, 'missions 2 and 3 locked at start');
+// difficulty selector
+check(await p.$$eval('.fps-diff button', e => e.length) === 3, 'Easy / Medium / Hard selector on the FPS menu');
+await p.click('[data-diff="hard"]');
+check(await p.$eval('[data-diff="hard"]', e => e.classList.contains('on')) && /harder/.test(await p.$eval('#fps-diff-desc', e => e.textContent)), 'Hard selectable with a description');
 await shot('01-menu');
+await p.click('[data-diff="medium"]');
 
 async function jumpTo(i, progress) {
   await p.evaluate(pr => localStorage.setItem('nd-fps-v1', pr), progress);
@@ -117,6 +122,26 @@ if (!only || only === 'f1' || only === 'cine') {
   // Overdrive (RTS: -10 hp, +50% speed/attack for 11s)
   const od = await p.evaluate(() => { const g = window.__fps; const h = g.hp; g['useOverdrive'](); return { cost: h - g.hp, t: g.overdrive }; });
   check(od.cost === 10 && od.t === 11, `Overdrive costs 10 health and lasts 11s (${od.cost}, ${od.t})`);
+  // automatic rifle: rounds per second while the trigger is held (aimed at the sky, no Overdrive)
+  const rps = await p.evaluate(async () => {
+    const g = window.__fps; g.overdrive = 0; g.testAuto = true; g.weapon = 'rifle'; g.pitch = 1.2;
+    const a0 = g.ammo, t0 = g.elapsed; g.mouseDown = true; await new Promise(r => setTimeout(r, 1500)); g.mouseDown = false;
+    const secs = g.elapsed - t0;   // game time (headless frames are slow and each is capped at 50 ms)
+    return { shots: Math.round((a0 - g.ammo) / secs), mag: a0, secs };
+  });
+  check(rps.shots >= 9 && rps.mag === 45, `automatic rifle fires ~12 rounds/s from a 45-round magazine (${rps.shots}/s over ${rps.secs.toFixed(2)}s game time)`);
+  // HE grenade: kills a Skitterling pack outright, knocks back and staggers a Carapid
+  const he = await p.evaluate(() => {
+    const g = window.__fps; const THREEV = g.pos.constructor;
+    const c = g.pos.clone(); c.x += 25; c.z += 25;
+    const pack = [0, 1, 2].map(i => g.spawn('skitterling', new THREEV(c.x + i * 1.2, 0, c.z)));
+    const cara = g.spawn('carapid', new THREEV(c.x + 2.5, 0, c.z + 1.5));
+    const before = cara.pos.clone();
+    g.splashAt(new THREEV(c.x + 1.2, g.heightAt(c.x, c.z), c.z), 4.5, 40, 20, false, true);
+    return { packDead: pack.every(e => !e.alive), caraHp: cara.hp, stun: cara.stun, push: cara.vel.length() };
+  });
+  check(he.packDead, 'one HE grenade kills a pack of three Skitterlings');
+  check(he.caraHp < 145 - 50 && he.stun > 0 && he.push > 3, `HE grenade hits an armored Carapid hard (hp ${he.caraHp.toFixed(0)}/145), knocks it back and staggers it`);
   await p.evaluate(() => { window.__fps.timeScale = 1; window.__fps.testAuto = true; });
   const r0 = await bot({ speed: 1, limit: 8, focus: ['thorn'], sustain: true });
   await shot('05-f1-combat');
@@ -166,6 +191,20 @@ if (!only || only === 'f3') {
   await shot('12-f3-end');
   check(r3.result === 'win', 'mission 3 completes (Brood Throne destroyed)');
   check(await p.$eval('#fps-end', e => !e.classList.contains('hidden')) && (await p.$eval('#fe-title', e => e.textContent)) === 'MISSION COMPLETE', 'final victory screen shows');
+}
+// difficulty scaling: Easy gives more health (x1.3), Hard less (x0.85)
+if (!only || only === 'diff') {
+  for (const [d, hp] of [['easy', 234], ['hard', 153]]) {
+    await p.evaluate(dd => { localStorage.setItem('nd-fps-difficulty', dd); localStorage.setItem('nd-fps-v1', '["f1"]'); }, d);
+    await p.reload({ waitUntil: 'networkidle0' }); await sleep(400);
+    await p.click('#fps-btn'); await sleep(300);
+    await p.evaluate(() => document.querySelectorAll('.fps-card')[1].click()); await sleep(300);
+    check((await p.$eval('#fb-diff', e => e.textContent)).toLowerCase().includes(d), `briefing shows ${d} difficulty`);
+    await p.click('#fb-go'); await waitGame();
+    const g = await p.evaluate(() => ({ hp: window.__fps.hp, d: window.__fps.difficulty }));
+    check(g.d === d && g.hp === hp, `${d}: Trooper starts with ${hp} health (${g.hp})`);
+  }
+  await p.evaluate(() => localStorage.removeItem('nd-fps-difficulty'));
 }
 check(errors.length === 0, `no page errors (${errors.slice(0, 3).join(' | ')})`);
 await b.close();
