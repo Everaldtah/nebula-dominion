@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nebula Dominion</title>
+  <meta name="description" content="Nebula Dominion: a real-time strategy game with three original races. Canvas 2D units, Three.js 3D effects, fully procedural audio." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Cpolygon points=%2216,2 30,16 16,30 2,16%22 fill=%22%235ef0ff%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%225%22 fill=%22%23ffb347%22/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <canvas id="fx"></canvas>
+
+  <!-- ============ MAIN MENU ============ -->
+  <div id="menu" class="screen">
+    <div class="menu-inner">
+      <h1 class="logo">NEBULA<span>DOMINION</span></h1>
+      <p class="sub">Three races. One contested world. Command the war.</p>
+      <div class="panel">
+        <h3>Choose your race</h3>
+        <div id="race-picks" class="race-picks"></div>
+        <div class="row">
+          <label>Opponent
+            <select id="opp-race"><option value="random">Random</option><option value="directorate">Vanguard Directorate</option><option value="kyrrh">Kyrrh Swarm</option><option value="aethel">Aethel Concord</option></select>
+          </label>
+          <label>Difficulty
+            <select id="difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
+          </label>
+          <label>Map seed
+            <input id="seed" type="number" value="42" min="1" max="99999" />
+          </label>
+        </div>
+        <div class="row buttons">
+          <button id="start-btn" class="big">Launch Skirmish</button>
+          <button id="howto-btn">How to Play</button>
+          <button id="settings-btn">Audio</button>
+        </div>
+      </div>
+      <p class="foot">Canvas 2D units · Three.js 3D effects · Procedural Web Audio · TypeScript simulation</p>
+    </div>
+  </div>
+
+  <div id="howto" class="screen overlay hidden">
+    <div class="panel wide">
+      <h2>How to Play</h2>
+      <div class="cols">
+        <div>
+          <h4>Controls</h4>
+          <ul class="keys">
+            <li><b>Left-click / drag</b> select units</li>
+            <li><b>Right-click</b> move / attack / harvest / rally</li>
+            <li><b>Shift</b> queue orders or add to selection</li>
+            <li><b>Ctrl+click / double-click</b> select all of a type</li>
+            <li><b>A</b> attack-move · <b>S</b> stop · <b>H</b> hold · <b>P</b> patrol · <b>M</b> move</li>
+            <li><b>B / V</b> basic / advanced build (workers)</li>
+            <li><b>Ctrl+1-9</b> set group · <b>1-9</b> recall (double-tap to jump)</li>
+            <li><b>F1</b> idle worker · <b>F2</b> select army · <b>Space</b> last alert</li>
+            <li><b>Arrows / screen edges / middle-drag</b> scroll · <b>Wheel</b> zoom</li>
+            <li><b>F10 / Esc</b> menu &amp; pause</li>
+          </ul>
+        </div>
+        <div>
+          <h4>The war economy</h4>
+          <p>Workers harvest <b class="min">Crystal</b> and <b class="gas">Flux</b>. Build supply structures to grow your army. Each race upgrades its main base through <b>three tiers</b>. Higher tiers unlock advanced production, giant tier-3 units and higher upgrade levels.</p>
+          <h4>Races</h4>
+          <p><b style="color:#ffb347">Vanguard Directorate</b>: builders stay on site. Command Bastion → Citadel → Stronghold. Fusion Works unlocks <i>Titans</i> and <i>Dreadnoughts</i>.</p>
+          <p><b style="color:#c8ff5a">Kyrrh Swarm</b>: units hatch from larva; buildings need creep; Drovers give supply. Brood Nest → Sanctum → Throne. Great Cavern and Elder Aerie unlock <i>Behemoths</i> and <i>Gravemaws</i>.</p>
+          <p><b style="color:#5ef0ff">Aethel Concord</b>: shields regenerate; structures need a Lumen field. Sanctum Core → Radiant → Exalted. Celestial Archive unlocks <i>Hierophants</i> and <i>Empyreans</i>.</p>
+          <p>Destroy every enemy structure to win.</p>
+        </div>
+      </div>
+      <button class="close-btn" data-close="howto">Close</button>
+    </div>
+  </div>
+
+  <div id="settings" class="screen overlay hidden">
+    <div class="panel">
+      <h2>Settings</h2>
+      <label class="slider">Master <input type="range" min="0" max="1" step="0.05" data-vol="master" /></label>
+      <label class="slider">Music <input type="range" min="0" max="1" step="0.05" data-vol="music" /></label>
+      <label class="slider">Effects <input type="range" min="0" max="1" step="0.05" data-vol="sfx" /></label>
+      <label class="slider">Unit voices <input type="range" min="0" max="1" step="0.05" data-vol="voice" /></label>
+      <label class="slider">Game speed
+        <select id="speed-sel"><option value="1">Normal</option><option value="1.4" selected>Faster</option><option value="1.8">Fastest</option></select>
+      </label>
+      <div class="row buttons" id="pause-buttons">
+        <button id="resume-btn" class="big">Resume</button>
+        <button id="surrender-btn">Surrender</button>
+      </div>
+      <button class="close-btn" data-close="settings">Close</button>
+    </div>
+  </div>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div id="top">
+      <div class="left">
+        <button id="menu-btn" title="Menu (F10)">MENU</button>
+        <span id="clock">00:00</span>
+        <button id="idle-btn" title="Idle worker (F1)">Idle: <b id="idle-count">0</b></button>
+        <button id="army-btn" title="Select army (F2)">Army</button>
+      </div>
+      <div class="right">
+        <span class="res"><i class="ico min"></i><b id="res-min">0</b></span>
+        <span class="res"><i class="ico gas"></i><b id="res-gas">0</b></span>
+        <span class="res"><i class="ico sup"></i><b id="res-sup">0/0</b></span>
+        <span class="res tier" id="res-tier">Tier 1</span>
+      </div>
+    </div>
+    <div id="msgs"></div>
+    <div id="alert-text"></div>
+    <div id="bottom">
+      <div id="mm-wrap"><canvas id="minimap" width="200" height="200"></canvas></div>
+      <div id="info">
+        <canvas id="portrait"></canvas>
+        <div id="info-body"></div>
+      </div>
+      <div id="cmd"></div>
+    </div>
+    <div id="tooltip" class="hidden"></div>
+  </div>
+
+  <div id="end" class="screen overlay hidden">
+    <div class="panel">
+      <h1 id="end-title">VICTORY</h1>
+      <table id="end-stats"></table>
+      <div class="row buttons">
+        <button id="again-btn" class="big">Play Again</button>
+        <button id="tomenu-btn">Main Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
