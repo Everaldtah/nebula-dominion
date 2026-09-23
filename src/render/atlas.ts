@@ -33,7 +33,7 @@ class Atlas {
       im.src = src;
     });
     await Promise.all(ids.map(async id => {
-      const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.png`), loadImg(`${BASE}sprites/${id}_turn.png`)]);
+      const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), loadImg(`${BASE}sprites/${id}_turn.webp`)]);
       this.loaded += 2;
       onProgress?.(this.loaded / Math.max(1, this.total));
       if (!img) return;

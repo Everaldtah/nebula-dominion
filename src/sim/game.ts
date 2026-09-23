@@ -89,6 +89,7 @@ export interface Player {
   air: number;
   researched: Set<string>;
   researching: Set<string>;
+  banned: Set<string>;
   alive: boolean;
   ai: 'easy' | 'normal' | 'hard' | null;
   color: string;
@@ -176,7 +177,7 @@ export class Game {
       const pl: Player = {
         id: i, race: p.race, name: p.name ?? (p.ai ? `AI (${p.ai})` : 'Commander'), team: i,
         minerals: 50, gas: 0, supplyUsed: 0, supplyCap: 0, weapons: 0, armor: 0, air: 0,
-        researched: new Set(), researching: new Set(), alive: true, ai: p.ai ?? null,
+        researched: new Set(), researching: new Set(), banned: new Set(), alive: true, ai: p.ai ?? null,
         color: p.color ?? PLAYER_COLORS[i], lastAlert: -9999, lastAttacked: null,
         stats: { minerals: 0, gas: 0, units: 0, buildings: 0, kills: 0, lost: 0 },
       };
@@ -265,11 +266,17 @@ export class Game {
     for (const rid of p.researched) { const r = RESEARCH[rid]; if (r.armorBonus?.units.includes(unitId)) a += r.armorBonus.amount; }
     return a;
   }
-  reqsMet(owner: number, def: { requires?: string[] }) {
+  reqsMet(owner: number, def: { id?: string; requires?: string[] }) {
+    if (def.id && this.players[owner]?.banned.has(def.id)) return false;
     return (def.requires ?? []).every(r => this.hasBuilt(owner, r));
   }
-  missingReq(owner: number, def: { requires?: string[] }) {
+  /** First unmet requirement; returns the def's own id when it is banned in this scenario. */
+  missingReq(owner: number, def: { id?: string; requires?: string[] }) {
+    if (def.id && this.players[owner]?.banned.has(def.id)) return def.id;
     return (def.requires ?? []).find(r => !this.hasBuilt(owner, r));
+  }
+  reqText(miss: string, def: { id?: string }) {
+    return miss === def.id ? 'Not available in this mission' : `Requires ${DEFS[miss].name}`;
   }
   nearestMineral(x: number, y: number, maxD = 999, preferFree = false): Entity | undefined {
     let best: Entity | undefined, bd = maxD;
@@ -475,7 +482,7 @@ export class Game {
         if (p.minerals < def.cost.m) return this.msg(owner, 'Not enough crystal');
         if (p.gas < def.cost.g) return this.msg(owner, 'Not enough flux');
         const miss = this.missingReq(owner, def);
-        if (miss) return this.msg(owner, `Requires ${DEFS[miss].name}`);
+        if (miss) return this.msg(owner, this.reqText(miss, def));
         const err = this.canPlace(owner, cmd.bType, cmd.tx, cmd.ty, -1);
         if (err) return this.msg(owner, err);
         const cx = cmd.tx + def.size / 2, cy = cmd.ty + def.size / 2;
@@ -544,7 +551,7 @@ export class Game {
       const nests = bs.filter(b => b.def?.larvaHost && b.built && b.larva > 0).sort((a, b) => b.larva - a.larva);
       if (!nests.length) return this.msg(owner, 'No larva available');
       const miss = this.missingReq(owner, def);
-      if (miss) return this.msg(owner, `Requires ${DEFS[miss].name}`);
+      if (miss) return this.msg(owner, this.reqText(miss, def));
       if (p.minerals < def.cost.m) return this.msg(owner, 'Not enough crystal');
       if (p.gas < def.cost.g) return this.msg(owner, 'Not enough flux');
       const sup = def.supply * (def.pairs ?? 1);
@@ -559,7 +566,7 @@ export class Game {
     const cands = bs.filter(b => b.isBuilding && b.built && b.def?.trains?.includes(unitId));
     if (!cands.length) return;
     const miss = this.missingReq(owner, def);
-    if (miss) return this.msg(owner, `Requires ${DEFS[miss].name}`);
+    if (miss) return this.msg(owner, this.reqText(miss, def));
     if (p.minerals < def.cost.m) return this.msg(owner, 'Not enough crystal');
     if (p.gas < def.cost.g) return this.msg(owner, 'Not enough flux');
     cands.sort((a, b) => a.queue.length - b.queue.length);
@@ -576,7 +583,7 @@ export class Game {
     const b = bs.find(b => b.isBuilding && b.built && b.def?.id === def.morphFrom && !b.queue.some(q => q.kind === 'morph'));
     if (!b) return;
     const miss = this.missingReq(owner, def);
-    if (miss) return this.msg(owner, `Requires ${DEFS[miss].name}`);
+    if (miss) return this.msg(owner, this.reqText(miss, def));
     if (b.queue.length) return this.msg(owner, 'Structure is busy');
     if (p.minerals < def.cost.m) return this.msg(owner, 'Not enough crystal');
     if (p.gas < def.cost.g) return this.msg(owner, 'Not enough flux');
@@ -754,6 +761,14 @@ export class Game {
     }
     for (const c of this.controllers) c.update();
     if (this.tick % 20 === 0) this.checkVictory();
+  }
+
+  /** Scripted end (campaign objectives complete / failed). */
+  endGame(winner: number) {
+    if (this.over) return;
+    this.over = true;
+    this.winner = winner;
+    this.emit({ t: 'gameover', winner });
   }
 
   private checkVictory() {
@@ -1558,7 +1573,7 @@ export class Game {
     const err = this.canPlace(u.owner, def.id, rect.tx, rect.ty, u.id);
     const miss = this.missingReq(u.owner, def);
     if (err || miss || p.minerals < def.cost.m || p.gas < def.cost.g) {
-      if (!p.ai) this.msg(u.owner, err ?? (miss ? `Requires ${DEFS[miss].name}` : p.minerals < def.cost.m ? 'Not enough crystal' : 'Not enough flux'));
+      if (!p.ai) this.msg(u.owner, err ?? (miss ? this.reqText(miss, def) : p.minerals < def.cost.m ? 'Not enough crystal' : 'Not enough flux'));
       u.orders.shift(); this.resumeWorker(u); return;
     }
     p.minerals -= def.cost.m; p.gas -= def.cost.g;

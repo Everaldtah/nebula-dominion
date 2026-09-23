@@ -118,7 +118,7 @@ export function buildCard(ctx: CmdContext): Btn[] {
         const miss = g.missingReq(me, bd);
         btns.push({
           id: 'build:' + bid, label: bd.name, hotkey: bd.hotkey, icon: iconFor(bid, col), enabled: !miss && affordable(bd.cost),
-          desc: bd.desc, cost: { ...bd.cost, t: bd.time, s: bd.provides ? -bd.provides : undefined }, req: miss ? `Requires ${DEFS[miss].name}` : undefined,
+          desc: bd.desc, cost: { ...bd.cost, t: bd.time, s: bd.provides ? -bd.provides : undefined }, req: miss ? g.reqText(miss, bd) : undefined,
           active: ctx.targeting === 'build:' + bid,
           run: () => { if (miss) return; ctx.target('build:' + bid); },
         });
@@ -185,7 +185,7 @@ export function buildCard(ctx: CmdContext): Btn[] {
     btns.push({
       id: 'train:' + uid, label: (ud.larva ? 'Hatch ' : 'Train ') + ud.name + (ud.pairs ? ' (x2)' : ''), hotkey: ud.hotkey, icon: iconFor(uid, col),
       enabled: !miss && affordable(ud.cost) && larvaOk, desc: ud.desc + (ud.larva ? ' Uses 1 larva.' : ''),
-      cost: { ...ud.cost, s: ud.supply * (ud.pairs ?? 1), t: ud.time }, req: miss ? `Requires ${DEFS[miss].name}` : !larvaOk ? 'No larva available' : undefined,
+      cost: { ...ud.cost, s: ud.supply * (ud.pairs ?? 1), t: ud.time }, req: miss ? g.reqText(miss, ud) : !larvaOk ? 'No larva available' : undefined,
       run: () => ctx.issue({ c: 'train', ids: sids, unit: uid }),
     });
   }
@@ -212,7 +212,7 @@ export function buildCard(ctx: CmdContext): Btn[] {
     btns.push({
       id: 'morph', label: `Upgrade to ${md.name}`, hotkey: md.hotkey, icon: glyphIcon('morph', '#ffcf6a'),
       enabled: !miss && affordable(md.cost) && !busy, desc: md.desc, cost: { ...md.cost, t: md.time },
-      req: miss ? `Requires ${DEFS[miss].name}` : busy ? 'Structure is busy' : undefined,
+      req: miss ? g.reqText(miss, md) : busy ? 'Structure is busy' : undefined,
       run: () => ctx.issue({ c: 'morph', ids: sids, to: md.id }),
     });
   }

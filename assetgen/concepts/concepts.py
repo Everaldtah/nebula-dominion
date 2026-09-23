@@ -37,10 +37,10 @@ def prompt_for(aid, spec):
     race, kind, subject = spec
     style = RACE.get(race, "realistic sci-fi")
     if kind == "building":
-        return f"sci-fi RTS game building: {subject}, standing on a flat base platform, {style}, isometric three-quarter view from above, {STYLE}"
+        return f"sci-fi RTS game building: {subject}, one single building only, entire structure fully visible and zoomed out with empty space around it, standing on a flat base platform, {style}, isometric three-quarter view from above, {STYLE}"
     if kind == "resource":
         return f"{subject}, isometric three-quarter view from above, {STYLE}"
-    return f"one single {subject}, {style}, one character only, three-quarter front view, {STYLE}"
+    return f"full body shot of one single {subject}, entire figure visible from head to feet, zoomed out with empty space around, standing, {style}, one character only, three-quarter front view, {STYLE}"
 
 
 LOAD_LOCK = threading.Lock()
@@ -55,7 +55,7 @@ def worker(dev, items, done):
         pipe.set_progress_bar_config(disable=True)
         for aid, spec in items:
             for k in range(N_CAND):
-                g = torch.Generator(device=f"cuda:{dev}").manual_seed(1000 + k * 7919 + zlib.crc32(aid.encode()) % 1000)
+                g = torch.Generator(device=f"cuda:{dev}").manual_seed(int(os.environ.get('SEED_OFF', '0')) + 1000 + k * 7919 + zlib.crc32(aid.encode()) % 1000)
                 img = pipe(prompt=prompt_for(aid, spec), negative_prompt=NEG, num_inference_steps=28, guidance_scale=6.5, width=1024, height=1024, generator=g).images[0]
                 img.save(f"{OUT}/{aid}_{k}.png")
             done.append(aid)

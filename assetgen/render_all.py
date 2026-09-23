@@ -24,6 +24,9 @@ UNITS = {
     "acolyte": (0.375, "hover", 0.45), "vindicator": (0.5, "walk", 0), "seeker": (0.625, "quad", 0), "bulwark": (0.75, "quad", 0),
     "strider": (1.0, "quad", 0), "radiant": (0.9, "hover", 1.2), "empyrean": (1.4, "hover", 1.6), "hierophant": (1.2, "walk", 0),
 }
+# model forward correction (degrees): TRELLIS puts the concept's front toward -Y, so units turn +90 to face east
+YAW = {"juggernaut_sieged": 180}
+UNIT_YAW = 90
 BUILD5 = {"bastion", "citadel", "stronghold", "nest", "sanctum", "throne", "core", "radiantcore", "exaltedcore"}
 BUILD2 = {"habitat", "turret", "thorn", "obelisk", "spire"}
 
@@ -42,6 +45,7 @@ def spec(aid):
 
 
 def render(aid, yaw, samples):
+    yaw = YAW.get(aid, UNIT_YAW if aid in UNITS else 0) if yaw is None else yaw
     glb = GLB / f"{aid}.glb"
     cmd = ["blender", "-b", "-P", str(SCRIPT), "--", "--glb", str(glb), "--id", aid, "--out", str(OUT), "--yaw", str(yaw), "--samples", str(samples), *spec(aid)]
     t = time.time()
@@ -57,7 +61,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
     ap.add_argument("--jobs", type=int, default=3)
-    ap.add_argument("--yaw", type=float, default=0)
+    ap.add_argument("--yaw", type=float, default=None)
     ap.add_argument("--samples", type=int, default=24)
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)

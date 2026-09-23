@@ -50,8 +50,8 @@ for aid, path in jobs:
     t0 = time.time()
     try:
         img = Image.open(path)
-        out = pipe.run(img, seed=1, sparse_structure_sampler_params={"steps": 12, "cfg_strength": 7.5}, slat_sampler_params={"steps": 12, "cfg_strength": 3})
-        glb = postprocessing_utils.to_glb(out["gaussian"][0], out["mesh"][0], simplify=0.93, texture_size=1024, verbose=False)
+        out = pipe.run(img, seed=1, sparse_structure_sampler_params={"steps": 25, "cfg_strength": 7.5}, slat_sampler_params={"steps": 25, "cfg_strength": 3.0})
+        glb = postprocessing_utils.to_glb(out["gaussian"][0], out["mesh"][0], simplify=0.85, texture_size=2048, verbose=False)
         glb.export(f"/kaggle/working/glb/{aid}.glb")
         publish("asset", id=aid, secs=round(time.time() - t0), gpu=os.environ.get("CUDA_VISIBLE_DEVICES"))
     except Exception:
@@ -79,17 +79,64 @@ try:
     sh(f"{py} -m pip install -q --no-build-isolation /tmp/mip-splatting/submodules/diff-gaussian-rasterization/", "diff-gaussian-rasterization")
     publish("installed", minutes=round((time.time() - t0) / 60, 1))
 
-    src = glob.glob("/kaggle/input/**/concepts", recursive=True)
-    publish("inputs", dirs=src)
+    src = [d for d in glob.glob("/kaggle/input/**/concepts", recursive=True) if os.path.isdir(d)]
+    listing = subprocess.run("find /kaggle/input -maxdepth 5 | head -30", shell=True, capture_output=True, text=True).stdout
+    if not src:
+        zips = glob.glob("/kaggle/input/**/*.zip", recursive=True)
+        if zips:
+            subprocess.run(f"mkdir -p /tmp/concepts && cd /tmp/concepts && unzip -o -q {zips[0]}", shell=True)
+        pngs = glob.glob("/tmp/concepts/**/*.png", recursive=True) or glob.glob("/kaggle/input/**/*.png", recursive=True)
+        src = [os.path.dirname(pngs[0])] if pngs else []
+    publish("inputs", dirs=src, listing=listing[-1500:])
     cdir = src[0]
     ids = sorted({os.path.basename(p).rsplit("_", 1)[0] for p in glob.glob(f"{cdir}/*.png")})
     if ONLY:
         ids = [i for i in ids if i in ONLY]
-    jobs = [(i, f"{cdir}/{i}_{PICKS.get(i, '0')}.png") for i in ids]
+    # auto-pick: the candidate whose cut-out is one clean, well-framed object
+    pick_code = r"""
+import sys, json, glob, os
+import numpy as np
+from PIL import Image
+from rembg import remove, new_session
+from scipy import ndimage
+sess = new_session("u2net")
+cdir, ids, picks = sys.argv[1], json.loads(sys.argv[2]), json.loads(sys.argv[3])
+out = {}
+for i in ids:
+    if i in picks: out[i] = picks[i]; continue
+    best, bs = "0", -1e9
+    for p in sorted(glob.glob(f"{cdir}/{i}_*.png")):
+        k = p.rsplit("_", 1)[1][:-4]
+        a = np.array(remove(Image.open(p).convert("RGB").resize((384, 384)), session=sess))[..., 3] > 128
+        cov = a.mean()
+        lab, n = ndimage.label(a)
+        sizes = np.bincount(lab.ravel())[1:] if n else np.array([0])
+        main = sizes.max() / max(1, sizes.sum())
+        big = (sizes > 0.05 * sizes.sum()).sum()
+        edge = a[:6].mean() + a[-6:].mean() + a[:, :6].mean() + a[:, -6:].mean()
+        score = main * 3 - (big - 1) * 2 - edge * 8 - abs(cov - 0.32) * 3
+        if score > bs: bs, best = score, k
+    out[i] = best
+print(json.dumps(out))
+"""
+    open("/tmp/pick.py", "w").write(pick_code)
+    r = subprocess.run([py, "/tmp/pick.py", cdir, json.dumps(ids), json.dumps(PICKS)], capture_output=True, text=True)
+    try:
+        chosen = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        chosen = {}
+        publish("pick-failed", tail=(r.stdout + r.stderr)[-800:])
+    publish("picks", picks=chosen)
+    for i in ids:
+        os.makedirs("/kaggle/working/picked", exist_ok=True)
+        subprocess.run(f"cp {cdir}/{i}_{chosen.get(i, '0')}.png /kaggle/working/picked/{i}.png", shell=True)
+    jobs = [(i, f"{cdir}/{i}_{chosen.get(i, PICKS.get(i, '0'))}.png") for i in ids]
     open("/tmp/worker.py", "w").write(WORKER)
+    # warm the DINOv2 hub cache once: two workers unpacking it at the same time corrupts it
+    sh(f"{py} -c \"import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg', pretrained=True)\"", "dinov2-cache")
     procs = []
     for g in range(2):
-        env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(g), "JOBS": json.dumps(jobs[g::2]), "NTFY_TOPIC": TOPIC, "ATTN_BACKEND": "xformers", "SPCONV_ALGO": "native"}
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(g), "JOBS": json.dumps(jobs[g::2]), "NTFY_TOPIC": TOPIC, "ATTN_BACKEND": "xformers", "SPCONV_ALGO": "native", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
         procs.append(subprocess.Popen([py, "/tmp/worker.py"], env=env, stdout=open(f"/tmp/worker{g}.log", "w"), stderr=subprocess.STDOUT))
     for p in procs:
         p.wait()

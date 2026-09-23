@@ -39,6 +39,8 @@
         </div>
         <div class="row buttons">
           <button id="start-btn" class="big">Launch Skirmish</button>
+          <button id="campaign-btn">Campaign</button>
+          <button id="gallery-btn">Unit Gallery</button>
           <button id="howto-btn">How to Play</button>
           <button id="settings-btn">Audio</button>
         </div>
@@ -116,6 +118,8 @@
         <span class="res tier" id="res-tier">Tier 1</span>
       </div>
     </div>
+    <div id="objectives" class="hidden"></div>
+    <div id="comms" class="hidden"><img id="comms-portrait" alt=""><div><b id="comms-name"></b><p id="comms-text"></p></div></div>
     <div id="msgs"></div>
     <div id="spec-bar" class="hidden"><div id="spec-players"></div><div class="speeds"><button data-speed="0">❚❚</button><button data-speed="0.5">½×</button><button data-speed="1" class="on">1×</button><button data-speed="2">2×</button><button data-speed="4">4×</button><button data-speed="8">8×</button><button data-speed="16">16×</button><button data-speed="99">MAX</button><button id="director-btn" class="on" title="Camera follows the action">🎥 Director</button></div></div>
     <div id="alert-text"></div>
@@ -134,11 +138,50 @@
 
   <div id="loading" class="screen overlay hidden"><div class="panel"><h3>Deploying battlefield…</h3><div class="progress" style="width:320px"><div id="loading-bar" style="width:0%"></div></div></div></div>
 
+  <div id="campaign" class="screen overlay hidden">
+    <div class="panel wide">
+      <h2>Campaign — The Shattered Veil</h2>
+      <p class="c-intro">Veil-9, a crystal world adrift in the Andara Nebula. Three peoples, one buried secret.</p>
+      <div id="campaign-acts"></div>
+      <button id="campaign-close" class="close-btn">Back</button>
+    </div>
+  </div>
+
+  <div id="briefing" class="screen overlay hidden">
+    <div class="panel wide brief">
+      <div class="brief-head"><h2 id="brief-title"></h2><span id="brief-sub"></span></div>
+      <div class="brief-body">
+        <img id="brief-portrait" alt="">
+        <div class="brief-talk"><b id="brief-speaker"></b><p id="brief-text"></p>
+          <h4>Objectives</h4><ul id="brief-objectives"></ul></div>
+      </div>
+      <div class="row buttons"><button id="brief-next" class="big">Next ▸</button><button id="brief-back">Campaign</button></div>
+    </div>
+  </div>
+
+  <div id="gallery" class="screen overlay hidden">
+    <div class="g-wrap">
+      <div class="g-side">
+        <h2>Unit Gallery</h2>
+        <div class="g-tabs"><button data-grace="directorate">Directorate</button><button data-grace="kyrrh">Kyrrh</button><button data-grace="aethel">Aethel</button></div>
+        <div class="g-tabs"><button data-gkind="unit">Units</button><button data-gkind="building">Structures</button></div>
+        <div id="g-list"></div>
+      </div>
+      <div class="g-view"><canvas id="g-canvas"></canvas><div id="g-status"></div>
+        <label class="g-rot"><input type="checkbox" id="g-rotate" checked> Auto-rotate</label>
+        <div id="g-anims"></div></div>
+      <div id="g-info"></div>
+      <button class="g-close">✕ Close</button>
+    </div>
+  </div>
+
   <div id="end" class="screen overlay hidden">
     <div class="panel">
       <h1 id="end-title">VICTORY</h1>
+      <div id="end-story"></div>
       <table id="end-stats"></table>
       <div class="row buttons">
+        <button id="next-btn" class="big hidden">Next Mission ▸</button>
         <button id="again-btn" class="big">Play Again</button>
         <button id="tomenu-btn">Main Menu</button>
       </div>

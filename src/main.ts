@@ -9,6 +9,9 @@ import { Camera, Renderer2D, ViewState } from './render/renderer2d';
 import { drawIcon, TILE } from './render/sprites';
 import { Btn, buildCard, iconFor } from './ui/commands';
 import { atlas } from './render/atlas';
+import { Gallery } from './ui/gallery';
+import { ACTS, Line, loadProgress, Mission, MISSIONS, saveProgress, unlocked } from './campaign/missions';
+import { CampaignController } from './campaign/controller';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const RACE_LIST: Race[] = ['directorate', 'kyrrh', 'aethel'];
@@ -49,6 +52,11 @@ class App {
   endShown = false;
   perf = { sim: 0, r2d: 0, fx: 0, hud: 0, mm: 0, frame: 0, fps: 60, show: false };
   spectator = false;
+  mission: Mission | null = null;
+  campaign: CampaignController | null = null;
+  gallery: Gallery | null = null;
+  commsQueue: Line[] = [];
+  commsT = 0;
   director = true;
   hot = { x: 64, y: 64, heat: 0, t: 0 };
   specSpeed = 1;
@@ -108,10 +116,10 @@ class App {
       const card = document.createElement('div');
       card.className = 'race-card' + (r === this.race ? ' sel' : '');
       card.style.setProperty('--rc', rd.accent);
-      const cv = document.createElement('canvas'); cv.width = 300; cv.height = 90;
+      const cv = document.createElement('canvas'); cv.width = 440; cv.height = 130;
       const c = cv.getContext('2d')!;
       const showcase = { directorate: ['trooper', 'juggernaut', 'titan', 'dreadnought'], kyrrh: ['skitterling', 'carapid', 'behemoth', 'gravemaw'], aethel: ['vindicator', 'seeker', 'hierophant', 'empyrean'] }[r];
-      showcase.forEach((u, i) => { c.save(); c.translate(i * 75, 5); if (!atlas.icon(c, u, 80, 0)) drawIcon(c, u, r, 80, rd.accent); c.restore(); });
+      showcase.forEach((u, i) => { const im = this.portraitImg(u); c.save(); c.translate(i * 108, 2); if (im) c.drawImage(im, -6, -2, 128, 128); else if (!atlas.icon(c, u, 110, 0)) drawIcon(c, u, r, 110, rd.accent); c.restore(); });
       card.appendChild(cv);
       card.insertAdjacentHTML('beforeend', `<h4>${rd.name}</h4><p>${rd.tagline}</p>`);
       card.onclick = () => { this.race = r; audio.unlock(); audio.ui('click'); this.buildMenu(); };
@@ -140,8 +148,13 @@ class App {
       $('settings').classList.add('hidden'); this.paused = false;
       for (const e of this.game.entities) if (e.alive && e.owner === this.me && e.isBuilding) this.game.kill(e, 1);
     };
-    $('again-btn').onclick = () => { $('end').classList.add('hidden'); this.startGame(); };
-    $('tomenu-btn').onclick = () => { $('end').classList.add('hidden'); this.toMenu(); };
+    $('again-btn').onclick = () => { $('end').classList.add('hidden'); if (this.mission) this.briefing(this.mission); else this.startGame(); };
+    $('tomenu-btn').onclick = () => { $('end').classList.add('hidden'); const wasCampaign = !!this.mission; this.toMenu(); if (wasCampaign) this.openCampaign(); };
+    $('next-btn').onclick = () => { $('end').classList.add('hidden'); const i = this.mission ? MISSIONS.indexOf(this.mission) : -1; this.toMenu(); if (i >= 0 && MISSIONS[i + 1]) this.briefing(MISSIONS[i + 1]); };
+    $('campaign-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.openCampaign(); };
+    $('gallery-btn').onclick = () => { audio.unlock(); audio.ui('open'); this.gallery ??= new Gallery(); this.gallery.open(); };
+    $('campaign-close').onclick = () => { audio.ui('click'); $('campaign').classList.add('hidden'); };
+    $('brief-back').onclick = () => { audio.ui('click'); $('briefing').classList.add('hidden'); this.openCampaign(); };
     $('idle-btn').onclick = () => this.selectIdleWorker();
     $('army-btn').onclick = () => this.selectArmy();
     const mm = $<HTMLCanvasElement>('minimap');
@@ -173,6 +186,8 @@ class App {
 
   toMenu() {
     this.mode = 'menu';
+    this.mission = null; this.campaign = null;
+    $('objectives').classList.add('hidden'); $('comms').classList.add('hidden');
     this.game = null; this.r2d = null;
     this.fx.clear();
     $('hud').classList.add('hidden');
@@ -180,13 +195,16 @@ class App {
     audio.playMusic('menu');
   }
 
-  async startGame() {
+  async startGame(mission: Mission | null = null) {
     if (this.loading) return;
-    this.spectator = (document.querySelector('input[name=mode]:checked') as HTMLInputElement | null)?.value === 'spectate';
-    const opp = ($<HTMLSelectElement>('opp-race').value) as Race | 'random';
+    this.mission = mission;
+    this.campaign = null;
+    this.spectator = !mission && (document.querySelector('input[name=mode]:checked') as HTMLInputElement | null)?.value === 'spectate';
+    const opp = mission ? mission.enemy : ($<HTMLSelectElement>('opp-race').value) as Race | 'random';
     const oppRace: Race = opp === 'random' ? RACE_LIST[Math.floor(Math.random() * 3)] : opp;
-    const diff = $<HTMLSelectElement>('difficulty').value as 'easy' | 'normal' | 'hard';
-    const seed = Math.max(1, Math.min(99999, +$<HTMLInputElement>('seed').value || 42));
+    const diff = mission ? mission.difficulty : $<HTMLSelectElement>('difficulty').value as 'easy' | 'normal' | 'hard';
+    const seed = mission ? mission.seed : Math.max(1, Math.min(99999, +$<HTMLInputElement>('seed').value || 42));
+    if (mission) this.race = mission.race;
     this.cfg = { opp, diff, seed };
     const diff1 = $<HTMLSelectElement>('difficulty1').value as 'easy' | 'normal' | 'hard';
     this.game = new Game({ seed, players: this.spectator
@@ -216,8 +234,20 @@ class App {
     this.mode = 'game';
     $('menu').classList.add('hidden');
     $('hud').classList.remove('hidden');
+    if (mission) {
+      this.campaign = new CampaignController(mission, this.game, {
+        say: l => this.say(l),
+        objectives: html => { $('objectives').innerHTML = html; },
+        win: () => { const done = loadProgress(); done.add(mission.id); saveProgress(done); this.game!.endGame(this.me); },
+        lose: reason => { this.failReason = reason; this.game!.endGame(1 - this.me); },
+      });
+      this.campaign.setup();
+      this.commsQueue = []; this.commsT = 0;
+    }
+    $('objectives').classList.toggle('hidden', !mission);
+    $('comms').classList.add('hidden');
     audio.playMusic(this.spectator ? 'menu' : this.race);
-    this.flash(this.spectator ? `AI vs AI: ${RACES[this.race].name} (blue) vs ${RACES[oppRace].name} (red)` : `${RACES[this.race].name} vs ${RACES[oppRace].name}. Destroy every enemy structure.`, 'info');
+    if (!mission) this.flash(this.spectator ? `AI vs AI: ${RACES[this.race].name} (blue) vs ${RACES[oppRace].name} (red)` : `${RACES[this.race].name} vs ${RACES[oppRace].name}. Destroy every enemy structure.`, 'info');
   }
 
   // =============================================================== CAMERA
@@ -520,6 +550,8 @@ class App {
       if (this.acc > 40) this.acc = 0;
     }
     if (this.spectator) this.directorCam(dt);
+    if (this.campaign && !this.paused && !g.over) this.campaign.update(dt * this.speed);
+    this.updateComms(dt);
     this.processEvents();
     const pt1 = performance.now();
     // selection cleanup
@@ -626,7 +658,14 @@ class App {
     const g = this.game!;
     const win = winner === this.me;
     const title = $('end-title');
-    title.textContent = this.spectator ? `${g.players[winner]?.name ?? 'Nobody'} WINS` : win ? 'VICTORY' : 'DEFEAT';
+    title.textContent = this.mission ? (win ? 'MISSION COMPLETE' : 'MISSION FAILED') : this.spectator ? `${g.players[winner]?.name ?? 'Nobody'} WINS` : win ? 'VICTORY' : 'DEFEAT';
+    const m = this.mission;
+    const idx = m ? MISSIONS.indexOf(m) : -1;
+    if (m && win) { const done = loadProgress(); done.add(m.id); saveProgress(done); }
+    $('end-story').innerHTML = m ? (win ? `<p>${m.outro}</p>` : `<p>${this.failReason || 'Your forces were defeated.'}</p>`) : '';
+    $('next-btn').classList.toggle('hidden', !(m && win && idx < MISSIONS.length - 1));
+    $('again-btn').textContent = m ? 'Retry Mission' : 'Play Again';
+    $('tomenu-btn').textContent = m ? 'Campaign' : 'Main Menu';
     title.className = this.spectator || win ? 'win' : 'lose';
     audio.playMusic(this.spectator || win ? 'victory' : 'defeat');
     const mins = Math.floor(g.time / 60), secs = Math.floor(g.time % 60);
@@ -638,11 +677,92 @@ class App {
   }
 
 
+
+  failReason = '';
+  openCampaign() {
+    const done = loadProgress();
+    const box = $('campaign-acts');
+    box.innerHTML = '';
+    for (const act of ACTS) {
+      const col = document.createElement('div');
+      col.className = 'c-act';
+      col.style.setProperty('--rc', RACES[act.race].accent);
+      col.innerHTML = `<h3>${act.title}</h3><p>${act.blurb}</p>`;
+      for (const m of MISSIONS.filter(x => x.act === act.n)) {
+        const open = unlocked(m, done), fin = done.has(m.id);
+        const card = document.createElement('div');
+        card.className = 'c-mission' + (open ? '' : ' locked') + (fin ? ' done' : '');
+        const lead = m.briefing[0]?.portrait ?? '';
+        card.innerHTML = `<img src="${import.meta.env.BASE_URL}portraits/${lead}.webp" onerror="this.style.visibility='hidden'"><div><b>${MISSIONS.indexOf(m) + 1}. ${m.title}</b><span>${m.subtitle}</span><em>${fin ? '✔ Completed' : open ? RACES[m.race].name + ' vs ' + RACES[m.enemy].name : '🔒 Locked'}</em></div>`;
+        if (open) card.onclick = () => { audio.ui('confirm'); $('campaign').classList.add('hidden'); this.briefing(m); };
+        col.appendChild(card);
+      }
+      box.appendChild(col);
+    }
+    $('campaign').classList.remove('hidden');
+  }
+
+  briefing(m: Mission) {
+    const el = $('briefing');
+    let page = 0;
+    const draw = () => {
+      const l = m.briefing[page];
+      $('brief-title').textContent = `${MISSIONS.indexOf(m) + 1}. ${m.title}`;
+      $('brief-sub').textContent = m.subtitle;
+      ($('brief-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp`;
+      $('brief-speaker').textContent = l.speaker;
+      this.typeText($('brief-text'), l.text);
+      $('brief-objectives').innerHTML = m.objectives.map(o => `<li>${o.optional ? '◇ Optional: ' : '◆ '}${o.label}</li>`).join('');
+      $<HTMLButtonElement>('brief-next').textContent = page < m.briefing.length - 1 ? 'Next ▸' : 'Begin Mission';
+      audio.unitVoice(m.race === 'kyrrh' && /Matriarch|Brood/.test(l.speaker) ? 'kyrrh' : /Hierarch|Seer/.test(l.speaker) ? 'aethel' : /Matriarch|Brood/.test(l.speaker) ? 'kyrrh' : 'directorate', l.portrait, 'ready', 0.5);
+    };
+    $('brief-next').onclick = () => {
+      audio.ui('click');
+      if (page < m.briefing.length - 1) { page++; draw(); return; }
+      el.classList.add('hidden');
+      this.startGame(m);
+    };
+    el.classList.remove('hidden');
+    draw();
+  }
+
+  typeTimer = 0;
+  typeText(el: HTMLElement, text: string) {
+    clearInterval(this.typeTimer);
+    let i = 0;
+    el.textContent = '';
+    this.typeTimer = window.setInterval(() => { i += 2; el.textContent = text.slice(0, i); if (i >= text.length) clearInterval(this.typeTimer); }, 16);
+  }
+
+  say(l: Line) { this.commsQueue.push(l); }
+  updateComms(dt: number) {
+    if (this.commsT > 0) { this.commsT -= dt; if (this.commsT <= 0) $('comms').classList.add('hidden'); return; }
+    const l = this.commsQueue.shift();
+    if (!l) return;
+    ($('comms-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp`;
+    $('comms-name').textContent = l.speaker;
+    this.typeText($('comms-text'), l.text);
+    $('comms').classList.remove('hidden');
+    const race = /Matriarch|Brood/.test(l.speaker) ? 'kyrrh' : /Hierarch|Seer/.test(l.speaker) ? 'aethel' : 'directorate';
+    audio.unitVoice(race, l.portrait, 'ready', 0.5);
+    this.commsT = 4 + l.text.length * 0.035;
+  }
+
   portraitId: string | null = null;
+  portraitImgs = new Map<string, HTMLImageElement | null>();
+  portraitImg(id: string): HTMLImageElement | null {
+    if (!this.portraitImgs.has(id)) {
+      const im = new Image();
+      this.portraitImgs.set(id, null);
+      im.onload = () => { this.portraitImgs.set(id, im); if (this.mode === 'menu') this.buildMenu(); };
+      im.src = `${import.meta.env.BASE_URL}portraits/${id}.webp`;
+    }
+    return this.portraitImgs.get(id) ?? null;
+  }
   portraitT = 0;
   showPortrait(id: string | null, race: Race | null, color: string) {
     this.portraitId = id;
-    const use2d = !!id && atlas.has(id);
+    const use2d = !!id && (atlas.has(id) || !!this.portraitImg(id));
     $('portrait2d').classList.toggle('hidden', !use2d);
     $('portrait').classList.toggle('hidden', use2d);
     if (!use2d) this.portrait?.show(id, race, color);
@@ -650,11 +770,23 @@ class App {
   renderPortrait(dt: number) {
     this.portraitT += dt;
     const id = this.portraitId;
-    if (id && atlas.has(id)) {
+    const img = id ? this.portraitImg(id) : null;
+    if (id && (img || atlas.has(id))) {
       const cv = $<HTMLCanvasElement>('portrait2d');
       const c = cv.getContext('2d')!;
       c.clearRect(0, 0, cv.width, cv.height);
-      atlas.drawTurn(c, id, this.portraitT * 9, cv.width);
+      if (img) {
+        // concept art with a slow cinematic drift + breathing zoom
+        const t = this.portraitT, k = 1.06 + Math.sin(t * 0.6) * 0.03;
+        const w = cv.width * k, dx = (cv.width - w) / 2 + Math.sin(t * 0.35) * 4, dy = (cv.height - w) / 2 + Math.cos(t * 0.45) * 3;
+        c.drawImage(img, dx, dy, w, w);
+        const gr = c.createLinearGradient(0, cv.height * 0.7, 0, cv.height);
+        gr.addColorStop(0, 'rgba(4,8,14,0)'); gr.addColorStop(1, 'rgba(4,8,14,0.65)');
+        c.fillStyle = gr; c.fillRect(0, 0, cv.width, cv.height);
+        c.globalAlpha = 0.06 + 0.04 * Math.sin(t * 7); c.fillStyle = '#5ef0ff';
+        for (let y = (t * 30) % 6; y < cv.height; y += 6) c.fillRect(0, y, cv.width, 1);
+        c.globalAlpha = 1;
+      } else atlas.drawTurn(c, id, this.portraitT * 9, cv.width);
     } else this.portrait?.render(dt);
   }
 

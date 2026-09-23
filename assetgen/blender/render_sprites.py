@@ -56,6 +56,7 @@ scene.render.image_settings.color_mode = "RGBA"
 try:
     scene.view_settings.view_transform = "AgX"
     scene.view_settings.look = "AgX - Medium High Contrast"
+    scene.view_settings.exposure = 0.3
 except Exception:
     pass
 
@@ -69,17 +70,22 @@ hdri = next((os.path.join(hdri_dir, f) for f in ("city.exr", "courtyard.exr", "f
 if hdri:
     env = wn.new("ShaderNodeTexEnvironment"); env.image = bpy.data.images.load(hdri)
     wl.new(env.outputs["Color"], bg.inputs["Color"])
-bg.inputs["Strength"].default_value = 0.55
+bg.inputs["Strength"].default_value = 0.8
 out_node = wn.get("World Output") or wn.new("ShaderNodeOutputWorld")
 wl.new(bg.outputs["Background"], out_node.inputs["Surface"])
 
 sun = bpy.data.objects.new("Sun", bpy.data.lights.new("Sun", "SUN"))
-sun.data.energy = 3.2; sun.data.angle = math.radians(6)
+sun.data.energy = 3.6; sun.data.angle = math.radians(6)
 sun.rotation_euler = (math.radians(40), math.radians(-28), math.radians(-35))  # light from upper-left of screen
 scene.collection.objects.link(sun)
 fill = bpy.data.objects.new("Fill", bpy.data.lights.new("Fill", "SUN"))
 fill.data.energy = 0.6; fill.rotation_euler = (math.radians(60), math.radians(30), math.radians(150))
 scene.collection.objects.link(fill)
+rim = bpy.data.objects.new("Rim", bpy.data.lights.new("Rim", "SUN"))
+rim.data.energy = 2.2; rim.data.color = (0.65, 0.8, 1.0); rim.data.use_shadow = False
+fill.data.use_shadow = False
+rim.rotation_euler = (math.radians(-55), 0, 0)          # from behind/above the model, toward the camera
+scene.collection.objects.link(rim)
 
 # ------------------------------------------------------------------ import + normalise
 bpy.ops.import_scene.gltf(filepath=a.glb)
@@ -114,6 +120,13 @@ me = obj.data
 base_co = [v.co.copy() for v in me.vertices]
 zmax = max(v.z for v in base_co) or 1
 obj.data.shade_smooth() if hasattr(obj.data, "shade_smooth") else None
+# TRELLIS exports metallicFactor 1.0 with no metallic map: everything becomes a dark mirror. Use satin metal.
+for m in obj.data.materials:
+    if not m or not m.use_nodes: continue
+    b = next((n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if not b: continue
+    if not b.inputs["Metallic"].is_linked: b.inputs["Metallic"].default_value = 0.3
+    if not b.inputs["Roughness"].is_linked: b.inputs["Roughness"].default_value = 0.55
 
 # ------------------------------------------------------------------ team colour key (hue ~ blue)
 def team_nodes(color_hex):
@@ -127,7 +140,12 @@ def team_nodes(color_hex):
         mix = nt.nodes.get("TEAM_MIX")
         if not mix:
             if not link: continue
-            src = link.from_socket
+            # lift dim AI textures (their concept lighting is baked in) so they read at sprite scale
+            boost = nt.nodes.new("ShaderNodeHueSaturation")
+            boost.inputs["Value"].default_value = 1.1
+            boost.inputs["Saturation"].default_value = 1.08
+            nt.links.new(link.from_socket, boost.inputs["Color"])
+            src = boost.outputs["Color"]
             hsv = nt.nodes.new("ShaderNodeSeparateColor"); hsv.mode = "HSV"; hsv.name = "TEAM_HSV"
             nt.links.new(src, hsv.inputs[0])
             # mask = hue in [0.56, 0.72] * saturation > 0.35 * value > 0.12

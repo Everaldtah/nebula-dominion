@@ -332,6 +332,12 @@ export class Renderer2D {
     if (m) {
       const frame = m.air > 0 ? Math.floor((t + e.id * 0.31) * 5) : e.moving || e.curSpeed > 0.05 ? Math.floor(e.walkPhase / 1.35) : 0;
       const bob = m.air > 0 ? Math.sin(t * 2 + e.id) * 2 : 0;
+      // team-coloured ground glow so sides stay readable whatever the model's palette
+      const tc = this.teamGlow(g.players[e.owner]?.color ?? '#ffffff');
+      const gr = e.radius * TILE * 1.25;
+      c.globalAlpha = m.air > 0 ? 0.35 : 0.55;
+      c.drawImage(tc, e.x * TILE - gr, e.y * TILE - gr * 0.62, gr * 2, gr * 1.24);
+      c.globalAlpha = 1;
       atlas.draw(c, sid, e.x * TILE, e.y * TILE + bob, e.facing, frame, team);
       if (e.attackAnim > 0.05) this.flashAt(e.x * TILE + Math.cos(e.facing) * e.radius * TILE * 1.1, e.y * TILE - (m.air * TILE * 0.7 + m.height * TILE * 0.4) + Math.sin(e.facing) * e.radius * TILE * 0.8, def.race);
       if (e.overdrive > 0) { c.globalAlpha = 0.3; c.fillStyle = '#ff3030'; c.beginPath(); c.arc(e.x * TILE, e.y * TILE - 8, e.radius * TILE * 1.2, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; }
@@ -359,6 +365,19 @@ export class Renderer2D {
     void v;
   }
 
+  private teamGlows = new Map<string, HTMLCanvasElement>();
+  private teamGlow(color: string) {
+    let cv = this.teamGlows.get(color);
+    if (!cv) {
+      cv = document.createElement('canvas'); cv.width = cv.height = 64;
+      const x = cv.getContext('2d')!;
+      const gr = x.createRadialGradient(32, 32, 8, 32, 32, 32);
+      gr.addColorStop(0, color + 'aa'); gr.addColorStop(0.6, color + '55'); gr.addColorStop(1, color + '00');
+      x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+      this.teamGlows.set(color, cv);
+    }
+    return cv;
+  }
   private glowCache = new Map<string, HTMLCanvasElement>();
   private flashAt(x: number, y: number, race: string, scale = 1) {
     const col = race === 'kyrrh' ? '200,255,90' : race === 'aethel' ? '94,240,255' : '255,210,120';

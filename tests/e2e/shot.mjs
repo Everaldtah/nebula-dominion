@@ -1,0 +1,12 @@
+import puppeteer from 'puppeteer-core';
+const b = await puppeteer.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: 'new', args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist'], defaultViewport: { width: 1600, height: 900 } });
+const p = await b.newPage();
+await p.goto(process.argv[2] || 'http://localhost:4173/', { waitUntil: 'networkidle0' });
+await new Promise(r => setTimeout(r, 2500));
+await p.screenshot({ path: 'tests/e2e/shots/10-menu-concepts.png' });
+await p.click('#start-btn');
+await p.waitForFunction(() => window.__nd.mode === 'game' && window.__nd.game.tick > 5, { timeout: 60000 });
+await p.evaluate(() => { const a = window.__nd; const w = a.game.entities.find(e => e.alive && e.owner === 0 && e.def?.worker); a.setSelection([w.id]); });
+await new Promise(r => setTimeout(r, 1500));
+await p.screenshot({ path: 'tests/e2e/shots/11-hud-portrait.png' });
+await b.close();

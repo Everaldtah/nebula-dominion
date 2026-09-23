@@ -50,6 +50,8 @@ export class AIController {
   attackSent = 0;
   lastAttackOrder = 0;
   lastWaveEnd = 0;
+  /** Campaign: never launch attack waves (scripted waves do the attacking). */
+  passive = false;
   siegeHold = new Map<number, number>();
   constructor(public game: Game, public pid: number, public level: 'easy' | 'normal' | 'hard') {
     this.plan = PLANS[game.players[pid].race];
@@ -426,7 +428,7 @@ export class AIController {
       const maxed = (this.p.supplyUsed >= 185 || (this.p.supplyUsed >= this.p.supplyCap - 2 && this.p.supplyCap < 200)) && supply >= this.cfg.wave * 0.75;
       const reachable = Math.max(this.cfg.wave, (Math.min(200, this.p.supplyCap + 16) - this.workers().length) * 0.7);
       const stale = g.tick - this.lastWaveEnd > 20 * 60 * 3 && supply >= this.cfg.wave;
-      if (supply >= Math.min(this.threshold, reachable) || maxed || stale) {
+      if (!this.passive && (supply >= Math.min(this.threshold, reachable) || maxed || stale)) {
         this.state = 'attack';
         this.attackSent = supply;
         this.lastAttackOrder = 0;

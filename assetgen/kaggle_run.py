@@ -20,6 +20,7 @@ def main():
     ap.add_argument("stage")
     ap.add_argument("--env", nargs="*", default=[])
     ap.add_argument("--sources", nargs="*", default=[])
+    ap.add_argument("--datasets", nargs="*", default=[])
     ap.add_argument("--no-wait", action="store_true")
     a = ap.parse_args()
     topic = f"nd-{a.stage}-{secrets.token_hex(4)}"
@@ -31,7 +32,7 @@ def main():
     (build / "main.py").write_text(head + body, encoding="utf-8")
     meta = {"id": f"{USER}/nd-assetgen-{a.stage}", "title": f"nd-assetgen-{a.stage}", "code_file": "main.py", "language": "python",
             "kernel_type": "script", "is_private": True, "enable_gpu": True, "enable_internet": True, "machine_shape": "NvidiaTeslaT4",
-            "dataset_sources": [], "competition_sources": [], "kernel_sources": a.sources}
+            "dataset_sources": a.datasets, "competition_sources": [], "kernel_sources": a.sources}
     (build / "kernel-metadata.json").write_text(json.dumps(meta), encoding="utf-8")
     r = kaggle("kernels", "push", "-p", str(build))
     print(r.stdout.strip(), r.stderr.strip())
