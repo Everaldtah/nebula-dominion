@@ -1,3 +1,4 @@
+import { q } from '../assetver';
 // Unit Gallery: every unit and structure of every race as an interactive 3D model.
 // Uses the AI-generated models (Draco/WebP GLBs in /models) when present, else the procedural models.
 import * as THREE from 'three';
@@ -155,7 +156,7 @@ export class Gallery {
       if (tier !== lastTier) { box.insertAdjacentHTML('beforeend', `<div class="g-tier">Tier ${tier}</div>`); lastTier = tier; }
       const item = document.createElement('div');
       item.className = 'g-item' + (id === this.current ? ' on' : '');
-      item.innerHTML = `<img src="${BASE}portraits/${id}.webp" onerror="this.style.visibility='hidden'"><span>${id === 'juggernaut_sieged' ? 'Juggernaut (Anchored)' : d.name}</span>`;
+      item.innerHTML = `<img src="${BASE}portraits/${id}.webp${q}" onerror="this.style.visibility='hidden'"><span>${id === 'juggernaut_sieged' ? 'Juggernaut (Anchored)' : d.name}</span>`;
       item.onclick = () => { audio.ui('click'); this.show(id); };
       box.appendChild(item);
     }
@@ -180,7 +181,7 @@ export class Gallery {
     let generated = true;
     if (entry === undefined) {
       entry = await new Promise<{ obj: THREE.Object3D; clips: THREE.AnimationClip[] } | null>(res =>
-        this.loader.load(`${BASE}models/${id}.glb`, g => res({ obj: g.scene, clips: g.animations }), undefined, () => res(null)));
+        this.loader.load(`${BASE}models/${id}.glb${q}`, g => res({ obj: g.scene, clips: g.animations }), undefined, () => res(null)));
       if (entry) this.normalise(entry.obj, def);
       this.cache.set(id, entry);
     }
@@ -254,7 +255,15 @@ export class Gallery {
       if (mat && mat.map && !mat.emissiveMap) { mat.emissiveMap = mat.map; mat.emissive = new THREE.Color(1, 1, 1); mat.emissiveIntensity = 0.55; }
       if (mat && mat.emissiveMap) mat.emissiveIntensity = Math.min(mat.emissiveIntensity || 0.55, 0.6);
     });
-    this.controls?.target.set(0, Math.min(1.4, (b2.max.y - b2.min.y) * 0.45), 0);
+    // frame the whole model: fit its bounding sphere in view whatever its height
+    const b3 = new THREE.Box3().setFromObject(wrap);
+    const sphere = b3.getBoundingSphere(new THREE.Sphere());
+    const cy = (b3.max.y + b3.min.y) / 2 + (def.air ? 0.3 : 0);
+    const dist = (sphere.radius + (def.air ? 0.4 : 0)) / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 1.08;
+    const dir = new THREE.Vector3(0.62, 0.42, 0.66).normalize();
+    this.controls?.target.set(0, cy, 0);
+    this.camera.position.set(dir.x * dist, cy + dir.y * dist, dir.z * dist);
+    if (this.controls) { this.controls.maxDistance = dist * 2.5; this.controls.minDistance = dist * 0.35; }
   }
 
   private info(id: string, def: EntityDef) {
@@ -274,7 +283,7 @@ export class Gallery {
     if (def.requires?.length) rows.push(['Requires', def.requires.map(r => DEFS[r].name).join(', ')]);
     const rd = RACES[def.race];
     this.el.querySelector('#g-info')!.innerHTML =
-      `<img class="g-portrait" src="${BASE}portraits/${id}.webp" onerror="this.style.display='none'">` +
+      `<img class="g-portrait" src="${BASE}portraits/${id}.webp${q}" onerror="this.style.display='none'">` +
       `<h2 style="color:${rd.accent}">${id === 'juggernaut_sieged' ? 'Juggernaut — Anchor Mode' : def.name}</h2><div class="g-race">${rd.name}</div>` +
       `<p class="g-desc">${def.desc}</p><table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`;
   }

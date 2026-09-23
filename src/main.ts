@@ -1,3 +1,4 @@
+import { q } from './assetver';
 import * as THREE from 'three';
 import { audio } from './audio/audio';
 import { AIController, attachAI } from './sim/ai';
@@ -698,7 +699,7 @@ class App {
         const card = document.createElement('div');
         card.className = 'c-mission' + (open ? '' : ' locked') + (fin ? ' done' : '');
         const lead = m.briefing[0]?.portrait ?? '';
-        card.innerHTML = `<img src="${import.meta.env.BASE_URL}portraits/${lead}.webp" onerror="this.style.visibility='hidden'"><div><b>${MISSIONS.indexOf(m) + 1}. ${m.title}</b><span>${m.subtitle}</span><em>${fin ? '✔ Completed' : open ? RACES[m.race].name + ' vs ' + RACES[m.enemy].name : '🔒 Locked'}</em></div>`;
+        card.innerHTML = `<img src="${import.meta.env.BASE_URL}portraits/${lead}.webp${q}" onerror="this.style.visibility='hidden'"><div><b>${MISSIONS.indexOf(m) + 1}. ${m.title}</b><span>${m.subtitle}</span><em>${fin ? '✔ Completed' : open ? RACES[m.race].name + ' vs ' + RACES[m.enemy].name : '🔒 Locked'}</em></div>`;
         if (open) card.onclick = () => { audio.ui('confirm'); $('campaign').classList.add('hidden'); this.briefing(m); };
         col.appendChild(card);
       }
@@ -714,7 +715,7 @@ class App {
       const l = m.briefing[page];
       $('brief-title').textContent = `${MISSIONS.indexOf(m) + 1}. ${m.title}`;
       $('brief-sub').textContent = m.subtitle;
-      ($('brief-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp`;
+      ($('brief-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp${q}`;
       $('brief-speaker').textContent = l.speaker;
       this.typeText($('brief-text'), l.text);
       $('brief-objectives').innerHTML = m.objectives.map(o => `<li>${o.optional ? '◇ Optional: ' : '◆ '}${o.label}</li>`).join('');
@@ -744,7 +745,7 @@ class App {
     if (this.commsT > 0) { this.commsT -= dt; if (this.commsT <= 0) $('comms').classList.add('hidden'); return; }
     const l = this.commsQueue.shift();
     if (!l) return;
-    ($('comms-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp`;
+    ($('comms-portrait') as HTMLImageElement).src = `${import.meta.env.BASE_URL}portraits/${l.portrait}.webp${q}`;
     $('comms-name').textContent = l.speaker;
     this.typeText($('comms-text'), l.text);
     $('comms').classList.remove('hidden');
@@ -760,7 +761,7 @@ class App {
       const im = new Image();
       this.portraitImgs.set(id, null);
       im.onload = () => { this.portraitImgs.set(id, im); if (this.mode === 'menu') this.buildMenu(); };
-      im.src = `${import.meta.env.BASE_URL}portraits/${id}.webp`;
+      im.src = `${import.meta.env.BASE_URL}portraits/${id}.webp${q}`;
     }
     return this.portraitImgs.get(id) ?? null;
   }

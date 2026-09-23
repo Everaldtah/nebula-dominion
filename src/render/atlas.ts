@@ -1,3 +1,4 @@
+import { q } from '../assetver';
 // Sprite atlas: pre-rendered 3D sprite sheets (AI-generated models rendered in Blender).
 // Sheet layout: columns = facing directions (0 = east, clockwise), rows = team x animation frame.
 import { TILE } from './sprites';
@@ -23,7 +24,7 @@ class Atlas {
   /** Fetch the sprite manifest only (tiny). Sheets are loaded per match with ensure(). */
   async load(onProgress?: (f: number) => void) {
     try {
-      const r = await fetch(`${BASE}sprites/manifest.json`, { cache: 'no-cache' });
+      const r = await fetch(`${BASE}sprites/manifest.json${q}`, { cache: 'no-cache' });
       this.manifest = r.ok ? await r.json() : {};
     } catch { this.manifest = {}; }
     onProgress?.(1);
@@ -47,7 +48,7 @@ class Atlas {
       let p = this.pending.get(id);
       if (!p) {
         p = (async () => {
-          const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp`), this.manifest![id].dirs > 1 || this.manifest![id].teams[0] !== "000000" ? loadImg(`${BASE}sprites/${id}_turn.webp`) : Promise.resolve(null)]);
+          const [img, turn] = await Promise.all([loadImg(`${BASE}sprites/${id}.webp${q}`), this.manifest![id].dirs > 1 || this.manifest![id].teams[0] !== "000000" ? loadImg(`${BASE}sprites/${id}_turn.webp${q}`) : Promise.resolve(null)]);
           if (!img) return;
           let bmp: HTMLImageElement | ImageBitmap = img;
           try { bmp = await createImageBitmap(img); } catch { /* keep element */ }
