@@ -46,6 +46,7 @@ class App {
   mmTerrain: HTMLCanvasElement | null = null;
   mmPings: { x: number; y: number; t: number }[] = [];
   endShown = false;
+  perf = { sim: 0, r2d: 0, fx: 0, hud: 0, mm: 0, frame: 0, fps: 60, show: false };
   cfg = { opp: 'random', diff: 'normal' as 'easy' | 'normal' | 'hard', seed: 42 };
 
   constructor() {
@@ -244,6 +245,7 @@ class App {
       if (this.cardMode !== 'main') { this.cardMode = 'main'; this.cardKey = ''; return; }
       const b = this.card.find(b => b.hotkey === 'Escape' && b.enabled); if (b) { b.run(); audio.ui('click'); } return;
     }
+    if (k === 'F9') { ev.preventDefault(); this.perf.show = !this.perf.show; $('perf').classList.toggle('hidden', !this.perf.show); return; }
     if (k === 'F1') { ev.preventDefault(); this.selectIdleWorker(); return; }
     if (k === 'F2') { ev.preventDefault(); this.selectArmy(); return; }
     if (k === ' ') { ev.preventDefault(); if (this.lastAlert) this.centerOn(this.lastAlert.x, this.lastAlert.y); return; }
@@ -280,12 +282,17 @@ class App {
       }
     }
     if (best) return best;
+    // structures take priority over the resource they sit on (flux buildings cover their vent)
+    let res: Entity | undefined;
     for (const e of g.entities) {
       if (!e.alive || e.type === 'unit') continue;
       if (e.owner !== this.me && !(e.seenMask & (1 << this.me))) continue;
-      if (tx >= e.tx && tx < e.tx + e.w && ty >= e.ty && ty < e.ty + e.h) return e;
+      if (tx >= e.tx && tx < e.tx + e.w && ty >= e.ty && ty < e.ty + e.h) {
+        if (e.isBuilding) return e;
+        res = e;
+      }
     }
-    return undefined;
+    return res;
   }
 
   setSelection(ids: number[]) {
@@ -457,6 +464,7 @@ class App {
     }
     this.clampCam();
 
+    const pt0 = performance.now();
     if (!this.paused && !g.over) {
       this.acc += dt * this.speed * TICK_RATE;
       let n = 0;
@@ -464,6 +472,7 @@ class App {
       if (n >= 10) this.acc = 0;
     }
     this.processEvents();
+    const pt1 = performance.now();
     // selection cleanup
     for (const id of this.view.selected) if (!g.get(id)) this.view.selected.delete(id);
     // ghost
@@ -486,7 +495,9 @@ class App {
     // render
     r2d.dpr = this.dpr;
     r2d.render({ ...this.view, cam: this.cam }, dt);
+    const pt2 = performance.now();
     this.fx.render(this.cam, this.paused ? 0 : dt);
+    const pt3 = performance.now();
     // audio listener
     audio.listener = { x: this.cam.x / TILE, y: this.cam.y / TILE, w: this.cam.w / this.cam.zoom / TILE, h: this.viewH / this.cam.zoom / TILE };
     this.shotRate *= Math.pow(0.5, dt);
@@ -494,8 +505,15 @@ class App {
 
     this.hudTimer -= dt;
     if (this.hudTimer <= 0) { this.hudTimer = 0.1; this.updateHUD(); }
+    const pt4 = performance.now();
     this.drawMinimap(dt);
     this.portrait?.render(dt);
+    const pt5 = performance.now();
+    const k = 0.1, P = this.perf;
+    P.sim += (pt1 - pt0 - P.sim) * k; P.r2d += (pt2 - pt1 - P.r2d) * k; P.fx += (pt3 - pt2 - P.fx) * k;
+    P.hud += (pt4 - pt3 - P.hud) * k; P.mm += (pt5 - pt4 - P.mm) * k; P.frame += (pt5 - pt0 - P.frame) * k;
+    P.fps += (1 / Math.max(dt, 1e-3) - P.fps) * k;
+    if (P.show) $('perf').textContent = `FPS ${P.fps.toFixed(0)} | frame ${P.frame.toFixed(1)}ms  sim ${P.sim.toFixed(1)}  2D ${P.r2d.toFixed(1)}  3D ${P.fx.toFixed(1)}  hud ${P.hud.toFixed(1)}  map ${P.mm.toFixed(1)} | ${g.entities.length} ents`;
   }
 
   // Renderer2D draws with its own transform; wrap to support devicePixelRatio.

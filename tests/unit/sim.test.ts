@@ -149,6 +149,36 @@ describe('economy', () => {
     run(g, 40);
     expect(g.players[0].gas).toBeGreaterThan(60);
   });
+  for (const race of ['directorate', 'kyrrh', 'aethel'] as Race[]) {
+    it(`${race}: right-clicking the vent under your flux building harvests flux (UI picks the vent)`, () => {
+      const g = mk(race, race === 'kyrrh' ? 'aethel' : 'kyrrh');
+      const main = g.unitsOf(0, e => !!e.def?.dropoff)[0];
+      const geyser = g.entities.filter(e => e.type === 'geyser').sort((a, b) => Math.hypot(a.x - main.x, a.y - main.y) - Math.hypot(b.x - main.x, b.y - main.y))[0];
+      const gb = g.spawnBuilding(0, RACES[race].gasBuilding, geyser.tx, geyser.ty, true);
+      expect(geyser.gasBuilding).toBe(gb.id);
+      const workers = g.unitsOf(0, e => !!e.def?.worker).slice(0, 3);
+      // target the VENT id, as the old click-picking did
+      g.issue({ c: 'smart', ids: workers.map(w => w.id), x: geyser.x, y: geyser.y, target: geyser.id }, 0);
+      for (const w of workers) { expect(w.orders[0]?.type).toBe('gather'); expect(w.orders[0]?.target).toBe(gb.id); }
+      run(g, 30);
+      expect(g.players[0].gas).toBeGreaterThanOrEqual(40);
+    });
+  }
+  it('vehicles accelerate and turn gradually; infantry pivots fast', () => {
+    const g = mk('directorate', 'kyrrh');
+    const c = freeSpot(g);
+    const j = unit(g, 0, 'juggernaut', c.x, c.y); j.facing = 0;
+    const t = unit(g, 0, 'trooper', c.x, c.y + 3); t.facing = 0;
+    g.issue({ c: 'move', ids: [j.id], x: c.x - 10, y: c.y }, 0);
+    g.issue({ c: 'move', ids: [t.id], x: c.x - 10, y: c.y + 3 }, 0);
+    run(g, 0.3);
+    expect(Math.abs(Math.abs(t.facing) - Math.PI)).toBeLessThan(0.2);
+    expect(Math.abs(Math.abs(j.facing) - Math.PI)).toBeGreaterThan(1.0);
+    expect(j.curSpeed).toBeLessThan(1);
+    run(g, 3);
+    expect(Math.abs(Math.abs(j.facing) - Math.PI)).toBeLessThan(0.3);
+    expect(j.curSpeed).toBeGreaterThan(1.5);
+  });
   it('mineral patches deplete and are removed', () => {
     const g = mk();
     const m = g.entities.find(e => e.type === 'mineral')!;

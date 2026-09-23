@@ -117,3 +117,5 @@ b.min { color: var(--min); } b.gas { color: var(--gas); }
 #end-stats td, #end-stats th { padding: 5px 10px; border-bottom: 1px solid #1c3044; text-align: center; }
 #end-stats th { color: var(--accent); font-family: 'Orbitron', sans-serif; font-size: 12px; }
 body.targeting canvas#game { cursor: crosshair; }
+
+#perf { position: absolute; top: 42px; left: 8px; font: 12px monospace; color: #9fe8b8; background: rgba(0,0,0,0.6); padding: 3px 8px; border-radius: 4px; pointer-events: none; }

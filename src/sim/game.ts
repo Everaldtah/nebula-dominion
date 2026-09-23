@@ -51,6 +51,7 @@ export class Entity {
   channel: { target: number; t: number } | null = null;
   rampTarget = 0; rampStacks = 0; healTarget = 0;
   attackAnim = 0; moving = false; bornTick = 0;
+  curSpeed = 0; walkPhase = 0;
   // resources
   amount = 0; occupiedBy = 0; gasBuilding = 0; geyser = 0;
   seenMask = 0; kills = 0;
@@ -421,7 +422,8 @@ export class Game {
         break;
       }
       case 'smart': {
-        const t = this.get(cmd.target);
+        let t = this.get(cmd.target);
+        if (t && t.type === 'geyser' && t.gasBuilding) { const gb = this.get(t.gasBuilding); if (gb) t = gb; }
         const units = own(cmd.ids);
         const mobile = units.filter(u => u.type === 'unit');
         const offs = this.formation(mobile, cmd.x, cmd.y);
@@ -447,9 +449,13 @@ export class Game {
         }
         break;
       }
-      case 'rally':
-        for (const b of own(cmd.ids)) if (b.isBuilding) b.rally = { x: cmd.x, y: cmd.y, target: cmd.target };
+      case 'rally': {
+        let rt = cmd.target;
+        const g0 = this.get(rt);
+        if (g0 && g0.type === 'geyser' && g0.gasBuilding && this.get(g0.gasBuilding)) rt = g0.gasBuilding;
+        for (const b of own(cmd.ids)) if (b.isBuilding) b.rally = { x: cmd.x, y: cmd.y, target: rt };
         break;
+      }
       case 'stop':
         for (const u of own(cmd.ids)) if (u.type === 'unit') { this.clearOrders(u); }
         break;
@@ -1009,6 +1015,31 @@ export class Game {
     }
   }
 
+  /** Turn rate (rad/s) — infantry pivots instantly, heavy walkers and vehicles turn slowly. */
+  turnRate(u: Entity) {
+    const d = u.def!;
+    if (d.attrs.includes('massive')) return d.air ? 2.2 : 3.2;
+    if (d.air) return 4.5;
+    if (d.attrs.includes('mech') && !d.worker && d.attrs.includes('armored')) return 5.5;
+    return 13;
+  }
+  accelOf(u: Entity) {
+    const d = u.def!;
+    if (d.attrs.includes('massive')) return 3.5;
+    if (d.air) return 5;
+    if (d.attrs.includes('mech') && !d.worker && d.attrs.includes('armored')) return 7;
+    return 28;
+  }
+  isVehicle(u: Entity) { const d = u.def!; return !d.air && !d.worker && d.attrs.includes('mech') && (d.id === 'scorcher' || d.id === 'juggernaut'); }
+  /** Rotate toward angle; returns remaining absolute difference. */
+  turnToward(u: Entity, ang: number) {
+    let diff = ang - u.facing;
+    diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    const tr = this.turnRate(u) * DT;
+    u.facing += Math.max(-tr, Math.min(tr, diff));
+    return Math.abs(diff) - Math.min(Math.abs(diff), tr);
+  }
+
   speedOf(u: Entity) {
     let s = u.def!.speed;
     if (u.overdrive > 0) s *= 1.5;
@@ -1052,6 +1083,12 @@ export class Game {
     }
     if (def.id === 'mender') this.menderHeal(u);
 
+    this.orderStep(u);
+    if (!u.moving) u.curSpeed = Math.max(0, u.curSpeed - this.accelOf(u) * DT * 3);
+  }
+
+  private orderStep(u: Entity) {
+    const def = u.def!;
     const o = u.orders[0];
     if (!o) { this.idle(u); return; }
     switch (o.type) {
@@ -1116,8 +1153,8 @@ export class Game {
     const d = this.edgeDist(u, t);
     if (d <= w.range + 0.05 && d >= (w.minRange ?? 0)) {
       u.path = null;
-      u.facing = Math.atan2(t.y - u.y, t.x - u.x);
-      if (u.cooldown <= 0) this.fire(u, t, w);
+      const off = this.turnToward(u, Math.atan2(t.y - u.y, t.x - u.x));
+      if (u.cooldown <= 0 && off < 0.5) this.fire(u, t, w);
       return true;
     }
     if (d < (w.minRange ?? 0)) { u.target = 0; return false; }
@@ -1292,10 +1329,8 @@ export class Game {
     const dx = tx - u.x, dy = ty - u.y;
     const d = Math.hypot(dx, dy);
     if (d < 1e-4) return true;
-    const step = Math.min(speed, d);
-    u.vx = (dx / d) * step; u.vy = (dy / d) * step;
-    u.facing = Math.atan2(dy, dx);
-    u.moving = true;
+    this.drive(u, dx / d, dy / d, d, dToGoal);
+    void speed;
     // group arrival: touching an idle friend near the goal
     if (!t && dToGoal < 2.2) {
       const near = this.hash.query(u.x, u.y, 1.5, this.tmp);
@@ -1318,6 +1353,24 @@ export class Game {
       } else u.stuckCount = 0;
     }
     return false;
+  }
+
+  /** Acceleration + turn-rate limited locomotion. Vehicles carve arcs; infantry strafe freely. */
+  private drive(u: Entity, nx: number, ny: number, segLen: number, remaining: number) {
+    const want = Math.atan2(ny, nx);
+    const left = this.turnToward(u, want);
+    const acc = this.accelOf(u);
+    let target = this.speedOf(u);
+    target = Math.min(target, Math.sqrt(2 * acc * Math.max(0, remaining)) + 0.35);
+    const vehicle = this.isVehicle(u) || u.def!.attrs.includes('massive') || u.isAir;
+    if (vehicle) target *= Math.max(0.2, Math.cos(Math.min(Math.PI / 2, left)));
+    u.curSpeed += Math.max(-acc * DT * 2.5, Math.min(acc * DT, target - u.curSpeed));
+    const step = Math.min(u.curSpeed * DT, segLen);
+    let mx = nx, my = ny;
+    if (vehicle) { const fx = Math.cos(u.facing), fy = Math.sin(u.facing); mx = fx * 0.6 + nx * 0.4; my = fy * 0.6 + ny * 0.4; const L = Math.hypot(mx, my) || 1; mx /= L; my /= L; }
+    u.vx = mx * step; u.vy = my * step;
+    u.moving = step > 1e-4;
+    u.walkPhase += step * 2.2 / Math.max(0.35, u.radius);
   }
 
   private separate() {

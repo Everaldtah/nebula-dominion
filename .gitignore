@@ -2,3 +2,5 @@ node_modules
 dist
 .vercel
 tests/e2e/shots
+
+.vercel
