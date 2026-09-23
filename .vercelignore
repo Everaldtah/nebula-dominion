@@ -1,0 +1,5 @@
+assetgen
+tests
+node_modules
+*.cmd
+serve-local.mjs

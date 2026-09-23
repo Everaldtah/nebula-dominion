@@ -42,13 +42,25 @@ Units, buildings and resources are real 3D models made by open AI models, then p
 
 1. **Concept art:** SDXL (OpenRAIL++) renders 3 candidates per asset on a free Kaggle T4 pair (`assetgen/concepts`).
 2. **Image → 3D:** [Microsoft TRELLIS](https://github.com/microsoft/TRELLIS) (MIT) turns the chosen concept into a textured GLB mesh (`assetgen/trellis`, about 60 s per model on a T4).
-3. **Rig, animate and render:** Blender 5 with Cycles on the GPU (`assetgen/blender/render_sprites.py`) does the following:
+3. **Rig, animate and render:** Blender 5 with Cycles on the GPU (`assetgen/blender/rig_render.py`, run by `assetgen/build_assets.py`) does the following:
    - Normalizes each model to game scale.
    - Recolors the blue-keyed panels to each team's color.
    - Adds procedural animation: a biped or quadruped gait, serpent undulation, hover bob, vehicle bounce or a light pulse.
    - Renders 16 facing directions × animation frames from a 48° camera onto a shadow catcher, plus a 24-frame turntable used for the HUD portrait.
 
 `python assetgen/kaggle_run.py concepts`, `python assetgen/kaggle_run.py trellis --sources everaldtah/nd-assetgen-concepts --env PICKS=id:k,...` and then `python assetgen/render_all.py` rebuild everything. Hunyuan3D was ruled out because its license excludes the UK and EU.
+
+## Unit Gallery and Campaign
+
+- **Unit Gallery (menu):** every unit and structure of all three races as the real AI-generated 3D model.
+  - Drag to orbit, scroll to zoom, with an auto-rotate toggle.
+  - Units are auto-rigged (legs detected from the mesh, plus spine, head and wings) and play Idle, Walk and Attack at an adjustable speed.
+  - The concept portrait and full stats appear alongside the model.
+- **Campaign: The Shattered Veil.**
+  - Nine original missions across three acts (Directorate, Kyrrh, Aethel).
+  - Briefings with character portraits, and in-mission comms.
+  - Objectives: destroy, survive, build, reach a tier, and protect your base, with scripted attack waves.
+  - Tech is locked per mission, and progress is saved.
 
 ## Modes and performance
 
@@ -61,7 +73,7 @@ Units, buildings and resources are real 3D models made by open AI models, then p
 ```bash
 npm install
 npm run dev          # local dev server
-npm test             # 46 simulation tests (mechanics + full AI-vs-AI games in every matchup)
+npm test             # 51 tests (simulation + campaign) (mechanics + full AI-vs-AI games in every matchup)
 npm run build && npm run preview
 npm run test:e2e     # drives the built game in headless Chrome (needs the preview server running)
 ```
