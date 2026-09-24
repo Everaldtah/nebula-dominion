@@ -1,9 +1,17 @@
-// Nebula Dominion: Iron Descent - Windows desktop shell.
+// Nebula Dominion - Windows desktop shell (shared by the RTS and the Iron Descent FPS apps).
 // Serves the bundled game from ./game on a private loopback port and opens it fullscreen on the GPU.
+// app.json (written by build.mjs) says which app this package is; no internet is needed at runtime.
 const { app, BrowserWindow, Menu, shell } = require('electron');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+
+const CFG = Object.assign(
+  { title: 'Nebula Dominion: Iron Descent', query: '?app=fps', port: 47480, dataDir: 'IronDescent' },
+  (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'app.json'), 'utf8')); } catch { return {}; } })());
+
+// Own profile per app, so the RTS and the FPS can run side by side and keep separate saves.
+app.setPath('userData', path.join(app.getPath('appData'), CFG.dataDir));
 
 // Use the discrete GPU and let audio start without a click (the game unlocks it on first input anyway).
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
@@ -16,8 +24,11 @@ const ROOT = path.join(__dirname, 'game');
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.wasm': 'application/wasm', '.glb': 'model/gltf-binary', '.webp': 'image/webp', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
 };
 
+// A fixed port keeps the page origin stable, so localStorage (campaign progress, settings) survives restarts.
+// Falls back to a random port if something else already holds it.
 function serve() {
   return new Promise(resolve => {
     const server = http.createServer((req, res) => {
@@ -30,7 +41,9 @@ function serve() {
         fs.createReadStream(file).pipe(res);
       });
     });
-    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    server.once('error', () => server.listen(0, '127.0.0.1'));
+    server.once('listening', () => resolve(server.address().port));
+    server.listen(CFG.port, '127.0.0.1');
   });
 }
 
@@ -44,7 +57,7 @@ app.whenReady().then(async () => {
   const port = await serve();
   win = new BrowserWindow({
     width: 1600, height: 900, fullscreen: true, backgroundColor: '#000000', show: false,
-    title: 'Nebula Dominion: Iron Descent', icon: path.join(__dirname, 'icon.ico'), autoHideMenuBar: true,
+    title: CFG.title, icon: path.join(__dirname, 'icon.ico'), autoHideMenuBar: true,
     webPreferences: { backgroundThrottling: false, contextIsolation: true, sandbox: true },
   });
   win.once('ready-to-show', () => win.show());
@@ -53,8 +66,9 @@ app.whenReady().then(async () => {
     if (input.type === 'keyDown' && input.key === 'F11') { win.setFullScreen(!win.isFullScreen()); e.preventDefault(); }
   });
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.on('page-title-updated', e => e.preventDefault());
   win.on('closed', () => { win = null; });
-  win.loadURL(`http://127.0.0.1:${port}/?app=fps`);
+  win.loadURL(`http://127.0.0.1:${port}/${CFG.query}`);
 });
 
 app.on('window-all-closed', () => app.quit());

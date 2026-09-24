@@ -75,7 +75,15 @@ class App {
     this.bindUI();
     requestAnimationFrame(t => this.frame(t));
     this.detectGpu();
-    if (new URLSearchParams(location.search).get('app') === 'fps') { audio.unlock(); this.openFps(true); }
+    const app = new URLSearchParams(location.search).get('app');
+    if (app === 'fps') { audio.unlock(); this.openFps(true); }
+    if (app === 'rts') { // RTS-only Windows app: the FPS ships as its own app, and the fullscreen window needs a way out
+      $('fps-btn').classList.add('hidden');
+      const quit = document.createElement('button');
+      quit.id = 'quit-btn'; quit.textContent = 'Quit to desktop';
+      quit.onclick = () => window.close();
+      $('settings-btn').after(quit);
+    }
     (window as any).__nd = this; // exposed for automated browser tests
     (window as any).__ndAI = AIController;
     (window as any).__ndDEFS = DEFS;

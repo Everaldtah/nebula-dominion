@@ -96,6 +96,14 @@ cd desktop && npm install && node build.mjs [--installer]   # web build -> FPS-o
 
 The website's **⬇ Windows app** button downloads `IronDescent-Setup.exe` from the GitHub release. The local build installs to `%LOCALAPPDATA%\Programs\IronDescent` and adds Desktop and Start-menu shortcuts. `node tests/e2e/desktop_app.mjs` smoke-tests the installed app.
 
+The RTS gets its own offline app from the same shell. It includes skirmish, Watch AI vs AI, the campaign and the unit gallery, and leaves out the FPS:
+
+```bash
+cd desktop && node build.mjs --app rts [--installer]   # all RTS assets (~95 MB) -> NebulaDominion.exe (+ NebulaDominion-Setup.exe)
+```
+
+It installs to `%LOCALAPPDATA%\Programs\NebulaDominion` with a **Nebula Dominion** shortcut. Fonts are bundled, so it needs no internet. Each app serves on a fixed loopback port (RTS 47481, FPS 47480), which keeps campaign progress between launches. `node tests/e2e/desktop_rts.mjs` blocks every non-loopback request and then plays a skirmish, so a pass shows the game runs offline.
+
 ## Modes and performance
 
 - **Play vs AI** or **Watch AI vs AI**. The spectator mode shows both economies and has an accelerator (½× to 16×, plus MAX) and a director camera that follows the biggest fight.
