@@ -59,7 +59,8 @@ if (process.argv.includes('--installer')) {
     targets: Platform.WINDOWS.createTarget(['nsis'], Arch.x64), prepackaged: appDir,
     config: {
       appId: APP.appId, productName: APP.shortcut, directories: { output: path.join(HERE, 'out', 'installer') },
-      win: { icon: path.join(HERE, 'icon.ico'), signAndEditExecutable: false },
+      // executableName: shortcuts must point at the real exe (otherwise NSIS assumes '<productName>.exe', which doesn't exist)
+      win: { icon: path.join(HERE, 'icon.ico'), signAndEditExecutable: false, executableName: APP.name },
       nsis: {
         oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true,
         shortcutName: APP.shortcut, artifactName: `${APP.name}-Setup.exe`,
