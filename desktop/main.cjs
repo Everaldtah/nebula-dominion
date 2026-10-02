@@ -47,6 +47,16 @@ function serve() {
   });
 }
 
+// Started from the Zenith.net launcher: --zenith-user / --zenith-party / --zenith-role reach the page as ?zuser= etc.
+function zenithQuery() {
+  const out = [];
+  for (const a of process.argv) {
+    const m = /^--zenith-(user|party|role)=(.{1,120})$/.exec(a);
+    if (m) out.push(`z${m[1]}=${encodeURIComponent(m[2])}`);
+  }
+  return out.length ? '&' + out.join('&') : '';
+}
+
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;
@@ -68,7 +78,7 @@ app.whenReady().then(async () => {
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   win.on('page-title-updated', e => e.preventDefault());
   win.on('closed', () => { win = null; });
-  win.loadURL(`http://127.0.0.1:${port}/${CFG.query}`);
+  win.loadURL(`http://127.0.0.1:${port}/${CFG.query}${zenithQuery()}`);
 });
 
 app.on('window-all-closed', () => app.quit());

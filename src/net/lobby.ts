@@ -12,7 +12,7 @@ const STALE_MS = 50_000;   // a presence we haven't heard from in this long is d
 
 export type Platform = 'web' | 'desktop';
 export type Status = 'lobby' | 'squad' | 'playing';
-export interface Presence { id: string; name: string; status: Status; platform: Platform; mission?: string; v: number }
+export interface Presence { id: string; name: string; status: Status; platform: Platform; mission?: string; party?: string; v: number }
 export interface LobbyMsg { t: string; from: string; mid: string; [k: string]: unknown }
 
 const rid = (n = 10) => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -64,7 +64,7 @@ export class Lobby {
       try {
         const p = JSON.parse(dec.decode(payload)) as Presence;
         if (p.v !== PROTO || typeof p.name !== 'string') return;
-        this.players.set(id, { ...p, id, name: p.name.slice(0, 20), seen: Date.now() });
+        this.players.set(id, { ...p, id, name: p.name.slice(0, 20), party: typeof p.party === 'string' ? p.party.slice(0, 80) : undefined, seen: Date.now() });
         this.emit();
       } catch { /* ignore junk */ }
       return;

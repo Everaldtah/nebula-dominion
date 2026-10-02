@@ -4,6 +4,7 @@ import { audio } from '../audio/audio';
 import { q } from '../assetver';
 import { CoopLink, DIFFICULTY, Difficulty, FpsGame, HudState, lockPointer } from './fps';
 import { Lobby, LobbyMsg, Presence } from '../net/lobby';
+import { ZENITH } from '../net/zenith';
 import { PeerLink } from '../net/link';
 import { Cinematic } from './cinematic';
 import { FPS_MISSIONS, FpsMission, OPERATION, fpsProgress, fpsSave, Radio } from './story';
@@ -157,6 +158,7 @@ export class FpsMode {
     let name = '';
     try { name = localStorage.getItem('nd-fps-name') ?? ''; } catch { /* ignore */ }
     if (!name) name = `Trooper-${Math.floor(1000 + Math.random() * 9000)}`;
+    if (ZENITH) name = ZENITH.user;                    // the player's Zenith.net tag
     const input = $<HTMLInputElement>('on-name');
     input.value = name;
     input.onchange = () => {
@@ -166,7 +168,8 @@ export class FpsMode {
     };
     input.onkeydown = e => e.stopPropagation();
     const lobby = this.lobby = new Lobby(name, platform);
-    lobby.onPlayers = () => this.renderLobby();
+    if (ZENITH?.party) lobby.me.party = ZENITH.party;
+    lobby.onPlayers = () => { this.renderLobby(); this.partyAutoInvite(); };
     lobby.onStatus = n => { $('on-status').textContent = n ? `online · ${n === 2 ? 'dual' : 'single'} broker` : 'reconnecting…'; $('on-status').className = n ? 'up' : 'down'; };
     lobby.onMessage = m => this.onLobbyMsg(m);
     lobby.connect();
@@ -182,6 +185,7 @@ export class FpsMode {
       case 'invite':
         if (this.squad || this.incoming || this.game) { this.lobby!.send(m.from, { t: 'decline', sid, busy: true }); return; }
         this.incoming = { from: m.from, name: esc(String(m.name ?? who(m.from))).slice(0, 40), sid };
+        if (ZENITH?.party && this.lobby!.players.get(m.from)?.party === ZENITH.party) { this.acceptInvite(); return; }   // launcher party
         audio.ui('open'); this.renderInvite(); return;
       case 'cancel': if (this.incoming?.sid === sid) { this.incoming = null; this.renderInvite(); } return;
       case 'accept': if (this.outgoing?.sid === sid) { this.outgoing = null; this.formSquad('host', m.from, who(m.from), sid); } return;
@@ -192,6 +196,14 @@ export class FpsMode {
       case 'relay': if (this.squad?.sid === sid) this.squad.link.handleRelay(m.d); return;
       case 'leave': if (this.squad?.sid === sid) this.leaveSquad(false, `${esc(this.squad.name)} left the squad`); return;
     }
+  }
+
+  /** Zenith.net launcher party: the host invites the first party member that shows up in the lobby. */
+  private partyAutoInvite() {
+    if (!ZENITH?.party || !ZENITH.host || !this.lobby || this.squad || this.outgoing || this.game) return;
+    const party = ZENITH.party;
+    const mate = [...this.lobby.players.values()].find(p => p.party === party && p.status === 'lobby');
+    if (mate) this.invite(mate.id);
   }
 
   invite(to: string) {
@@ -275,7 +287,8 @@ export class FpsMode {
       const inviting = this.outgoing?.to === p.id;
       const can = p.status === 'lobby' && !this.squad && !this.outgoing && !this.game;
       const status = p.status === 'lobby' ? 'in the menu' : p.status === 'squad' ? 'in a squad' : `playing${p.mission ? ' ' + esc(FPS_MISSIONS.find(m => m.id === p.mission)?.title ?? '') : ''}`;
-      return `<div class="on-row"><span class="on-plat">${p.platform === 'desktop' ? '🖥' : '🌐'}</span><b>${esc(p.name)}</b><em>${status}</em>` +
+      const mate = !!ZENITH?.party && p.party === ZENITH.party ? ' <em style="color:#b49cff">your party</em>' : '';
+      return `<div class="on-row"><span class="on-plat">${p.platform === 'desktop' ? '🖥' : '🌐'}</span><b>${esc(p.name)}</b>${mate}<em>${status}</em>` +
         (inviting ? `<span class="on-wait">Inviting…</span>` : `<button data-invite="${esc(p.id)}" ${can ? '' : 'disabled'}>Invite</button>`) + `</div>`;
     }).join('');
     el.querySelectorAll<HTMLButtonElement>('[data-invite]').forEach(b => b.onclick = () => this.invite(b.dataset.invite!));
